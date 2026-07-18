@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "swipl-sys",
+    "splint",
+]
+
+[workspace.package]
+edition = "2021"
