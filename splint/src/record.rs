@@ -78,13 +78,24 @@ impl<'rt> Record<'rt> {
         ctx: &'a C,
     ) -> Result<Term<'a>, RecordError> {
         let dest = ctx.term().map_err(|_| RecordError::Failed)?;
+        self.recall_into(dest)?;
+        Ok(dest)
+    }
+
+    /// Recalls the recorded term into the existing reference `term`
+    /// (`PL_recorded`), overwriting whatever it held.
+    ///
+    /// Use this to recall into a slot that already exists — for instance a
+    /// query argument or a term about to be unified — rather than allocating a
+    /// fresh reference as [`Record::recall`] does.
+    pub fn recall_into(&self, term: Term<'_>) -> Result<(), RecordError> {
+        crate::scope::assert_gen(term.gen(), "term");
         // SAFETY: `self.raw` is a live record handle (Record invariant);
-        // `dest` is a fresh live reference on the thread's current engine
-        // (allocated through `ctx` just above), which `PL_recorded` copies the
-        // recorded term into.
-        let ok = unsafe { swipl_sys::PL_recorded(self.raw, dest.as_raw()) };
+        // `term` is a live reference on the thread's current engine (the gen
+        // assert above), which `PL_recorded` copies the recorded term into.
+        let ok = unsafe { swipl_sys::PL_recorded(self.raw, term.as_raw()) };
         if ok {
-            return Ok(dest);
+            return Ok(());
         }
         match take_pending_exception() {
             Some(exception) => Err(RecordError::Exception(exception)),

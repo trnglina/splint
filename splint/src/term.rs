@@ -1137,6 +1137,10 @@ impl<'f> Term<'f> {
     pub fn as_raw(&self) -> term_t {
         self.raw
     }
+
+    pub(crate) fn gen(&self) -> u64 {
+        self.gen
+    }
 }
 
 /// A dict key, which SWI-Prolog represents as either an atom or a small
