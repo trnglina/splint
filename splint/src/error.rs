@@ -70,7 +70,7 @@ pub enum EngineCreateError {
     Failed,
 }
 
-/// Errors from [`crate::Engine::attach`].
+/// Errors from [`crate::Engine::attach`] and [`crate::Engine::attach_within`].
 #[derive(Debug, Error)]
 pub enum AttachError {
     /// The engine handle was rejected by SWI-Prolog (`PL_ENGINE_INVAL`).
@@ -80,6 +80,18 @@ pub enum AttachError {
     /// (`PL_ENGINE_INUSE`).
     #[error("the engine is already attached to another thread")]
     InUse,
+    /// The calling thread already has an engine attached through this crate;
+    /// nesting requires [`crate::Engine::attach_within`], whose guard keeps
+    /// the outer attachment alive for the restore on drop (invariant E5).
+    #[error(
+        "the calling thread already has an engine attached through this \
+         crate; nest with Engine::attach_within"
+    )]
+    AlreadyAttached,
+    /// The guard passed to [`crate::Engine::attach_within`] is not the
+    /// calling thread's innermost attachment (invariant E5).
+    #[error("the given attach guard is not the calling thread's innermost attachment")]
+    NotInnermost,
     /// `PL_set_engine` returned a status code this crate does not know.
     #[error("PL_set_engine returned an unrecognized status code {0}")]
     Unknown(c_int),

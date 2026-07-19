@@ -107,10 +107,52 @@ impl<'r> Engine<'r> {
     /// current-engine slot is per-OS-thread storage, so the detach must
     /// happen on the thread that attached (invariant E3).
     ///
+    /// Fails with [`AttachError::AlreadyAttached`] if the thread already has
+    /// an engine attached through this crate: the previously attached engine
+    /// must outlive the guard for the restore on drop to be sound, which a
+    /// plain attach cannot guarantee for a crate-managed engine — nest with
+    /// [`Engine::attach_within`] instead, whose guard borrows the outer one
+    /// (invariant E5). An engine attached outside this crate's management
+    /// (e.g. the main engine on the thread that initialized the runtime)
+    /// lives as long as the [`Runtime`] this guard pins, so restoring it is
+    /// always valid.
+    ///
     /// Leaking the guard (e.g. [`std::mem::forget`]) is safe but leaves the
-    /// engine attached to this thread indefinitely; the engine can then no
-    /// longer be destroyed from another thread and will be leaked.
+    /// engine attached to this thread indefinitely: the engine can then no
+    /// longer be destroyed from another thread and will be leaked, and this
+    /// thread refuses further plain attaches.
     pub fn attach(&mut self) -> Result<AttachedEngine<'_>, AttachError> {
+        if scope::current().gen != 0 {
+            return Err(AttachError::AlreadyAttached);
+        }
+        self.attach_unchecked()
+    }
+
+    /// Attaches this engine to the calling thread, nested inside the live
+    /// attachment `outer`.
+    ///
+    /// The returned guard borrows `outer` in addition to exclusively
+    /// borrowing this engine, so the outer attachment — and the exclusive
+    /// borrow of *its* engine — statically outlives the nested guard: the
+    /// engine this guard's drop re-attaches cannot have been destroyed or
+    /// attached elsewhere in the interim (invariant E5). Fails with
+    /// [`AttachError::NotInnermost`] if `outer` is not the thread's current
+    /// attachment (e.g. a third engine was attached within it already).
+    pub fn attach_within<'a>(
+        &'a mut self,
+        outer: &'a AttachedEngine<'_>,
+    ) -> Result<AttachedEngine<'a>, AttachError> {
+        if scope::current().gen != outer.gen {
+            return Err(AttachError::NotInnermost);
+        }
+        self.attach_unchecked()
+    }
+
+    /// Shared attach path. Callers must have established that restoring the
+    /// currently attached engine on drop will be sound (see `attach` /
+    /// `attach_within`): either no crate-managed engine is attached, or the
+    /// current attachment's guard is borrowed by the one returned here.
+    fn attach_unchecked(&mut self) -> Result<AttachedEngine<'_>, AttachError> {
         let mut previous: PL_engine_t = ptr::null_mut();
         // SAFETY: `self.raw` is a valid engine handle owned by `self` (E1).
         // `&mut self` guarantees no other call is using this handle
@@ -157,18 +199,24 @@ impl Drop for Engine<'_> {
 }
 
 /// RAII guard for an engine attached to the current thread; produced by
-/// [`Engine::attach`].
+/// [`Engine::attach`] and [`Engine::attach_within`].
 ///
 /// While alive, the underlying [`Engine`] is exclusively borrowed (invariant
 /// E4): it cannot be moved, dropped, or re-attached. On drop, the thread's
 /// previously attached engine is restored (or the thread is detached if
 /// there was none). Guards for *different* engines may be nested on one
-/// thread; dropping them in LIFO order restores the chain correctly.
+/// thread through [`Engine::attach_within`]; the nested guard borrows the
+/// outer one, so drops are LIFO by construction and the restore chain is
+/// always valid (invariant E5).
 pub struct AttachedEngine<'e> {
     /// The engine that was current before the attach, restored verbatim on
     /// drop. Null means "no engine": `PL_set_engine(NULL, ..)` is the
     /// documented detach path (`PL_ENGINE_NONE` must NOT be passed — the C
-    /// implementation would dereference it).
+    /// implementation would dereference it). Non-null means either an engine
+    /// outside this crate's management, pinned alive by the [`Runtime`]
+    /// borrow this guard carries, or the engine of the outer guard an
+    /// [`Engine::attach_within`] call borrowed — pinned alive by that borrow
+    /// (invariant E5).
     previous: PL_engine_t,
     /// This attachment's engine generation, minted at attach time; term
     /// references, frames, and queries created under this guard record it
@@ -194,17 +242,50 @@ impl AttachedEngine<'_> {
 
 impl Drop for AttachedEngine<'_> {
     fn drop(&mut self) {
+        // A generation mismatch means this guard is not the thread's
+        // innermost attachment. Statically that leaves one cause: an inner
+        // `attach_within` guard was leaked (it borrowed this guard shared,
+        // so it cannot still be alive at our drop). Restoring `previous`
+        // here would detach the leaked attachment's engine while the record
+        // above still describes it — and every restore below the leak would
+        // desynchronize the activation record from the engine actually
+        // attached, re-arming the C3 checks against the wrong engine. Leave
+        // both the engine slot and the record untouched instead (E5).
+        if scope::current().gen != self.gen {
+            if !std::thread::panicking() {
+                panic!(
+                    "splint: engine attach guard dropped while a leaked inner \
+                     attachment is still current; the engine stays attached"
+                );
+            }
+            // While unwinding, leak the attachment silently rather than
+            // double-panicking into an abort.
+            return;
+        }
         // SAFETY: this runs on the thread that performed the attach — the
         // guard is !Send, making that a compile-time guarantee (E3).
-        // `previous` is either null (detach) or the handle that was current
-        // on this thread at attach time; engines cannot have been destroyed
-        // in the interim because destroying requires ownership or an
-        // exclusive borrow that outer guards on this thread still hold.
+        // `previous` is null, an unmanaged engine pinned by the Runtime
+        // borrow, or the live outer guard's engine (see the field docs, E5),
+        // so it is valid and attachable.
         let mut old: PL_engine_t = ptr::null_mut();
-        let _ = unsafe { swipl_sys::PL_set_engine(self.previous, &mut old) };
-        // Restoring the saved activation in lockstep with the engine restore
-        // keeps the record consistent even when guards for different engines
-        // are dropped out of order (C1).
+        let rc = unsafe { swipl_sys::PL_set_engine(self.previous, &mut old) };
+        if rc != swipl_sys::PL_ENGINE_SET as c_int {
+            // Unreachable through the safe surface (E5 makes `previous`
+            // valid and attachable); raw-FFI interference can produce it.
+            // The engine slot's real state is now unknown, so the activation
+            // record must not be rewritten to claim otherwise.
+            if !std::thread::panicking() {
+                panic!(
+                    "splint: PL_set_engine failed to restore the previous \
+                     engine on detach (status {rc}); the crate's attach \
+                     bookkeeping disagrees with the engine (raw FFI \
+                     interference, or a bug in splint — please report it)"
+                );
+            }
+            return;
+        }
+        // Restoring the saved activation in lockstep with the verified
+        // engine restore keeps the record matching the attached engine (C1).
         scope::restore(self.saved_activation);
     }
 }

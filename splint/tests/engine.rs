@@ -1,7 +1,8 @@
 use std::os::raw::c_int;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::LazyLock;
 
-use splint::{Engine, EngineAttributes, InitError, Runtime};
+use splint::{AttachError, Engine, EngineAttributes, InitError, Runtime};
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     Runtime::initialize(["splint-test", "-q"]).expect("shared runtime initialize failed")
@@ -111,7 +112,7 @@ fn nested_attaches_restore_in_lifo_order() {
 
     let guard_a = a.attach().expect("attach a failed");
     assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, a_ptr);
-    let guard_b = b.attach().expect("attach b failed");
+    let guard_b = b.attach_within(&guard_a).expect("attach b failed");
     assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, b_ptr);
     drop(guard_b);
     assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, a_ptr);
@@ -120,4 +121,59 @@ fn nested_attaches_restore_in_lifo_order() {
         runtime.current_engine().map(|e| e.as_ptr() as usize),
         baseline
     );
+}
+
+/// A second plain attach on a thread that already has a crate-managed engine
+/// attached is refused: the guard's drop re-attaches the previous engine,
+/// which a plain attach cannot keep alive (E5).
+#[test]
+fn plain_attach_while_attached_is_refused() {
+    let runtime: &Runtime = &RT;
+    let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
+    let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
+    let _guard = a.attach().expect("attach a failed");
+    assert!(matches!(b.attach(), Err(AttachError::AlreadyAttached)));
+}
+
+/// `attach_within` demands the guard it nests inside be the thread's
+/// innermost attachment; nesting inside an already-covered guard would break
+/// the LIFO restore chain (E5).
+#[test]
+fn attach_within_requires_the_innermost_guard() {
+    let runtime: &Runtime = &RT;
+    let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
+    let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
+    let mut c = Engine::new(runtime, EngineAttributes::default()).expect("create c failed");
+    let guard_a = a.attach().expect("attach a failed");
+    let _guard_b = b.attach_within(&guard_a).expect("attach b failed");
+    assert!(matches!(
+        c.attach_within(&guard_a),
+        Err(AttachError::NotInnermost)
+    ));
+}
+
+/// Dropping an outer guard past a *leaked* inner attachment panics instead
+/// of detaching the leaked engine and desynchronizing the activation record
+/// from the engine actually attached (E5).
+#[test]
+fn dropping_past_a_leaked_inner_attachment_panics() {
+    let runtime: &Runtime = &RT;
+    let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
+    let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
+    let b_ptr = b.as_ptr() as usize;
+
+    let guard_a = a.attach().expect("attach a failed");
+    let guard_b = b.attach_within(&guard_a).expect("attach b failed");
+    std::mem::forget(guard_b);
+
+    let result = catch_unwind(AssertUnwindSafe(move || drop(guard_a)));
+    let message = *result.unwrap_err().downcast::<&str>().unwrap();
+    assert!(
+        message.contains("leaked inner attachment"),
+        "expected the leaked-attachment panic, got: {message}"
+    );
+    // The leaked attachment is untouched: b is still this thread's engine.
+    assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, b_ptr);
+    // `b` is destroyed on drop below while attached to this thread, which
+    // SWI-Prolog permits from the owning thread.
 }

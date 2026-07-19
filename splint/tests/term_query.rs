@@ -467,7 +467,7 @@ fn terms_refuse_to_operate_after_an_engine_switch() {
 
         let mut other = Engine::new(&RT, EngineAttributes::default()).expect("create failed");
         {
-            let _other_ctx = other.attach().expect("attach failed");
+            let _other_ctx = other.attach_within(ctx).expect("attach failed");
             let result = catch_unwind(AssertUnwindSafe(|| term.get_i64()));
             let message = *result.unwrap_err().downcast::<String>().unwrap();
             assert!(

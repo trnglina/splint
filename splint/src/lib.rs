@@ -41,15 +41,28 @@
 //! - **E4** — An attach guard exclusively borrows its [`Engine`], which
 //!   borrows the [`Runtime`]: guard ⊆ engine ⊆ runtime, enforced by the
 //!   borrow checker.
+//! - **E5** — A guard's drop re-attaches the previously attached engine, so
+//!   that engine must outlive the guard. [`Engine::attach`] therefore
+//!   refuses a thread that already has a crate-managed engine attached: its
+//!   `previous` is then null or an unmanaged engine (e.g. the main engine),
+//!   pinned for the [`Runtime`]'s lifetime. Nesting goes through
+//!   [`Engine::attach_within`], whose guard borrows the outer guard: the
+//!   outer engine stays exclusively borrowed — alive and unattachable
+//!   elsewhere — until the nested guard drops, and drops are LIFO by
+//!   construction. Dynamic backstops cover what borrows cannot: a guard
+//!   whose generation is no longer current (a leaked inner guard) panics on
+//!   drop instead of restoring through the leak, and the restore's
+//!   `PL_set_engine` status is checked, never assumed.
 //!
 //! Contexts and scopes (see `scope.rs`, `term.rs`, `query.rs`):
 //!
 //! - **C1** — Every thread carries an *activation record* `(generation,
 //!   scope depth)`. Attaching an engine mints a process-unique generation
 //!   and saves the previous record, which the guard's drop restores in
-//!   lockstep with its `PL_set_engine` restore, so the record stays
-//!   consistent even when guards for different engines are dropped out of
-//!   order. [`CurrentEngine`] snapshots the record at creation.
+//!   lockstep with its *verified* `PL_set_engine` restore — and only after
+//!   checking the guard is still the thread's innermost attachment (E5) —
+//!   so the record always describes the engine actually attached.
+//!   [`CurrentEngine`] snapshots the record at creation.
 //! - **C2** — Frames and queries record the depth they were opened at and
 //!   must be the innermost open scope to close (LIFO): the borrow checker
 //!   enforces this for parent/child nesting, and the activation record
@@ -118,12 +131,14 @@
 //!   checked.
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
-//! a leaked guard leaves an engine attached (and eventually leaked), a
-//! leaked engine leaves a C engine outstanding (making a later cleanup
-//! report failure), and a leaked runtime merely prevents cleanup. A leaked
-//! frame or query leaves its C-side scope open and its depth registered, so
-//! closing any outer scope afterwards panics (C2) rather than corrupting
-//! the stacks.
+//! a leaked guard leaves an engine attached (and eventually leaked), its
+//! generation current — so the thread refuses further plain attaches and
+//! dropping an outer guard panics rather than restoring through the leak
+//! (E5) — a leaked engine leaves a C engine outstanding (making a later
+//! cleanup report failure), and a leaked runtime merely prevents cleanup. A
+//! leaked frame or query leaves its C-side scope open and its depth
+//! registered, so closing any outer scope afterwards panics (C2) rather
+//! than corrupting the stacks.
 
 mod engine;
 mod error;
