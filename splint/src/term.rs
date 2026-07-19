@@ -5,6 +5,8 @@ use std::ptr;
 use swipl_sys::{term_t, PL_fid_t};
 
 use crate::handles::{Atom, Functor};
+use crate::record::{Record, RecordError};
+use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
 
 mod sealed {
@@ -832,6 +834,28 @@ impl<'f> Term<'f> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above.
         unsafe { swipl_sys::PL_is_variable(self.raw) }
+    }
+
+    /// Records this term into SWI-Prolog's engine-independent recorded
+    /// database (`PL_record`), returning a [`Record`] that outlives this
+    /// term's scope.
+    ///
+    /// `runtime` supplies the returned record's lifetime brand, which is
+    /// independent of this term's own scope — that independence is the point:
+    /// the record survives frame close, backtracking, and engine switches.
+    pub fn record<'rt>(&self, _runtime: &'rt Runtime) -> Result<Record<'rt>, RecordError> {
+        scope::assert_gen(self.gen, "term");
+        // SAFETY: C3 assert above; `PL_record` copies the term into the global
+        // recorded database and returns a fresh handle carrying one erase
+        // obligation, which the `Record` takes on.
+        let raw = unsafe { swipl_sys::PL_record(self.raw) };
+        if raw.is_null() {
+            return Err(match take_pending_exception() {
+                Some(exception) => RecordError::Exception(exception),
+                None => RecordError::Failed,
+            });
+        }
+        Ok(Record::from_raw(raw))
     }
 
     /// The raw term reference. Exposed for tests and escape hatches; using

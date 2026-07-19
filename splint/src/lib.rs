@@ -4,7 +4,8 @@
 //! and borrowing rules encode SWI-Prolog's threading model, so that the safe
 //! surface cannot cause undefined behavior. Currently covered: the
 //! process-global [`Runtime`], thread-movable [`Engine`]s, foreign
-//! [`Frame`]s, [`Term`] references, and [`Query`] execution.
+//! [`Frame`]s, [`Term`] references, [`Query`] execution, and [`Record`]ed
+//! terms.
 //!
 //! # Soundness invariants
 //!
@@ -130,6 +131,19 @@
 //!   failure sentinel; `PL_new_functor_sz` and `PL_predicate` do and are
 //!   checked.
 //!
+//! Records (see `record.rs`):
+//!
+//! - **RC1** — A [`Record`] is a copy of a term in SWI-Prolog's global,
+//!   lock-protected recorded database. It carries no engine generation because
+//!   that store is engine-independent (like an [`Atom`], A2), and it borrows
+//!   the [`Runtime`] rather than any scope: it may outlive every frame, query,
+//!   and engine, but cannot outlive [`Runtime::cleanup`] (R4), which is what
+//!   makes the `PL_erase` in its `Drop` sound. It is [`Send`] (records are
+//!   portable across threads and engines) but not `Sync`. Producing a record
+//!   ([`Term::record`]) checks the source term's generation (C3); recalling it
+//!   ([`Record::recall`]) allocates the destination through an [`FliContext`],
+//!   which witnesses that an engine is current.
+//!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
 //! generation current — so the thread refuses further plain attaches and
@@ -138,12 +152,14 @@
 //! cleanup report failure), and a leaked runtime merely prevents cleanup. A
 //! leaked frame or query leaves its C-side scope open and its depth
 //! registered, so closing any outer scope afterwards panics (C2) rather
-//! than corrupting the stacks.
+//! than corrupting the stacks. A leaked [`Record`] merely leaves a copy in the
+//! recorded database until the runtime is cleaned up.
 
 mod engine;
 mod error;
 mod handles;
 mod query;
+mod record;
 mod runtime;
 mod scope;
 mod term;
@@ -152,5 +168,6 @@ pub use engine::{AttachedEngine, CurrentEngine, Engine, EngineAttributes};
 pub use error::{AttachError, CleanupError, CleanupErrorKind, EngineCreateError, InitError};
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{Query, QueryError, QueryOptions};
+pub use record::{Record, RecordError};
 pub use runtime::{CleanupOptions, Runtime};
 pub use term::{FliContext, Frame, FrameError, PrologException, Term, TermError, TermKind, TermList};
