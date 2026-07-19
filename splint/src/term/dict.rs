@@ -224,8 +224,7 @@ struct DictCollector {
     /// Set when copying a value failed under resource exhaustion
     /// (`PL_new_term_ref` returning 0, or `PL_put_term` returning false): a
     /// Prolog exception is pending and must be captured *after* `PL_for_dict`
-    /// returns (rendering it inside the callback, while already out of stack,
-    /// is best avoided).
+    /// returns, not inside the callback.
     resource_failed: bool,
 }
 

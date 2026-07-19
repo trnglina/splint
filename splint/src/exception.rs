@@ -16,10 +16,10 @@ use swipl_sys::term_t;
 ///
 /// The exception term is rendered (as by `writeq/1`) at the moment it is
 /// observed, before the raising query or frame is torn down, and the engine's
-/// pending-exception state is cleared. The representation is deliberately a
-/// plain [`String`]: the raw exception term dies with the scope that raised
-/// it, and carrying a `PL_record` instead would tie every error type to the
-/// runtime's lifetime. Structured exception inspection is future work.
+/// pending-exception state is cleared. The representation is a plain
+/// [`String`]: the raw exception term dies with the scope that raised it, and
+/// carrying a `PL_record` instead would tie every error type to the runtime's
+/// lifetime. Structured exception inspection is future work.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{0}")]
 pub struct PrologException(pub String);

@@ -45,8 +45,8 @@ pub enum AttachError {
 
 /// Creation attributes for an [`Engine`], mirroring the numeric knobs of
 /// `PL_thread_attr_t`. `alias`, the cancel hook, `thread_class`, and `flags`
-/// are deliberately not exposed yet: wrapping them safely (string lifetimes,
-/// callback ABI) is a separate design problem.
+/// are not exposed yet: wrapping them safely (string lifetimes, callback ABI)
+/// is future work.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EngineAttributes {
     /// Total stack limit in bytes (`stack_limit`). `None` uses the default.
@@ -73,14 +73,12 @@ pub struct Engine<'r> {
     _runtime: PhantomData<&'r Runtime>,
 }
 
-// SAFETY: an engine created by `PL_create_engine` starts unattached, and
-// SWI-Prolog documents that a detached engine may later be attached to a
-// *different* OS thread (`PL_set_engine` tracks attachment via `has_tid`
-// under its own L_THREAD lock, at attach time, not creation time).
-// Transferring the owning value across threads and attaching there is
-// therefore a supported operation, which is all `Send` grants. `Engine` is
-// deliberately not `Sync` (E2): with `&mut`-only methods, no two threads can
-// ever call into SWI-Prolog with the same engine handle concurrently.
+// SAFETY: an engine created by `PL_create_engine` starts unattached, and a
+// detached engine may later be attached from a *different* OS thread (per the
+// SWI-Prolog manual). Moving the owning value across threads and attaching it
+// there is therefore supported, which is all `Send` grants. `Engine` is not
+// `Sync` (E2): with `&mut`-only methods, no two threads can call into
+// SWI-Prolog with the same engine handle concurrently.
 unsafe impl Send for Engine<'_> {}
 
 impl<'r> Engine<'r> {

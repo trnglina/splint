@@ -19,7 +19,7 @@
 //! - **R2** — All calls to `PL_initialise`, `PL_set_resource_db_mem`, and
 //!   `PL_cleanup` are serialized under one private mutex, held across the
 //!   entire FFI call. This compensates for `PL_initialise`'s unlocked
-//!   check-then-act on its initialized flag in the C implementation.
+//!   check-then-act on its own initialized flag.
 //! - **R3** — The argv strings handed to `PL_initialise` are leaked to
 //!   `'static`, because SWI-Prolog retains the pointers.
 //! - **R4** — Everything created from the runtime ([`Engine`],

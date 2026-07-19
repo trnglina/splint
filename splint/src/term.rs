@@ -60,10 +60,8 @@ pub enum FrameError {
 }
 
 /// Interprets the result of a `PL_put_*`/`PL_cons_*` call. These have no
-/// "wrong type" concept, so failure without a pending exception means
-/// SWI-Prolog violated its own contract and panicking is the only honest
-/// response (mirroring the crate's treatment of other violated FLI
-/// invariants).
+/// "wrong type" concept, so failure without a pending exception is a contract
+/// violation and panics.
 fn check_put(ok: bool, operation: &'static str) -> Result<(), TermError> {
     if ok {
         return Ok(());
@@ -740,9 +738,8 @@ impl<'f> Term<'f> {
     pub fn list_shape(&self) -> ListShape {
         scope::assert_gen(self.gen, "term");
         let mut len: usize = 0;
-        // SAFETY: C3 assert above; passing `0` (no term reference) for the
-        // tail tells PL_skip_list not to return the tail, which is not needed
-        // here. PL_skip_list is cycle-safe by construction.
+        // SAFETY: C3 assert above; the `0` tail argument means the tail is
+        // not returned, which is not needed here.
         let status = unsafe { swipl_sys::PL_skip_list(self.raw, 0, &mut len) };
         match status as u32 {
             swipl_sys::PL_LIST => ListShape::Proper { len },
@@ -883,8 +880,8 @@ impl<'f> Term<'f> {
     /// term's scope.
     ///
     /// `runtime` supplies the returned record's lifetime brand, which is
-    /// independent of this term's own scope — that independence is the point:
-    /// the record survives frame close, backtracking, and engine switches.
+    /// independent of this term's own scope, so the record survives frame
+    /// close, backtracking, and engine switches.
     pub fn record<'rt>(&self, _runtime: &'rt Runtime) -> Result<Record<'rt>, RecordError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above; `PL_record` copies the term into the global
