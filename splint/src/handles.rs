@@ -201,6 +201,14 @@ impl<'c> Functor<'c> {
         self.arity
     }
 
+    /// The functor's name atom (`PL_functor_name`).
+    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+        // SAFETY: `self.raw` is a live functor handle; its name is a live atom
+        // handle, and `from_raw` takes its own registration (A1). `_ctx` pins
+        // the runtime for the returned handle's lifetime (A2).
+        unsafe { Atom::from_raw(swipl_sys::PL_functor_name(self.raw)) }
+    }
+
     /// The raw functor handle. Exposed for tests and escape hatches.
     #[doc(hidden)]
     pub fn as_raw(&self) -> swipl_sys::functor_t {
@@ -232,6 +240,32 @@ impl<'c> Module<'c> {
     /// Finds or creates the module with the given name from text.
     pub fn by_name<C: FliContext + ?Sized>(ctx: &'c C, name: &str) -> Module<'c> {
         Module::new(ctx, &Atom::new(ctx, name))
+    }
+
+    /// Wraps a raw module handle (e.g. read from a predicate). Modules are
+    /// global and never garbage collected, so the handle carries no reference
+    /// count.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a live module handle, and the runtime must outlive `'c`.
+    pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
+        _ctx: &'c C,
+        raw: swipl_sys::module_t,
+    ) -> Module<'c> {
+        Module {
+            raw,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    /// The module's name atom (`PL_module_name`).
+    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+        // SAFETY: `self.raw` is a live module handle; its name is a live atom,
+        // and `from_raw` takes its own registration (A1). `_ctx` pins the
+        // runtime for the returned handle's lifetime (A2).
+        unsafe { Atom::from_raw(swipl_sys::PL_module_name(self.raw)) }
     }
 
     /// The raw module handle. Exposed for tests and escape hatches.
@@ -306,6 +340,35 @@ impl<'c> Predicate<'c> {
 
     pub fn arity(&self) -> usize {
         self.arity
+    }
+
+    /// Reads the predicate's name, arity, and defining module in one call
+    /// (`PL_predicate_info`).
+    fn info(&self) -> (swipl_sys::atom_t, usize, swipl_sys::module_t) {
+        let mut name: swipl_sys::atom_t = 0;
+        let mut arity: usize = 0;
+        let mut module: swipl_sys::module_t = ptr::null_mut();
+        // SAFETY: `self.raw` is a valid predicate handle (A3); the out-pointers
+        // are live stack locals. PL_predicate_info succeeds for a live
+        // predicate.
+        let ok =
+            unsafe { swipl_sys::PL_predicate_info(self.raw, &mut name, &mut arity, &mut module) };
+        assert!(ok, "splint: PL_predicate_info failed for a live predicate");
+        (name, arity, module)
+    }
+
+    /// The predicate's name atom (`PL_predicate_info`).
+    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+        // SAFETY: `name` is a live atom handle just read; `from_raw` takes its
+        // own registration (A1); `_ctx` pins the runtime (A2).
+        unsafe { Atom::from_raw(self.info().0) }
+    }
+
+    /// The predicate's defining module (`PL_predicate_info`).
+    pub fn module<'a, C: FliContext + ?Sized>(&self, ctx: &'a C) -> Module<'a> {
+        // SAFETY: `module` is a live module handle just read; `ctx` pins the
+        // runtime (A2).
+        unsafe { Module::from_raw(ctx, self.info().2) }
     }
 
     /// The raw predicate handle. Exposed for tests and escape hatches.
