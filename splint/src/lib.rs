@@ -4,8 +4,8 @@
 //! and borrowing rules encode SWI-Prolog's threading model, so that the safe
 //! surface cannot cause undefined behavior. Currently covered: the
 //! process-global [`Runtime`], thread-movable [`Engine`]s, foreign
-//! [`Frame`]s, [`Term`] references, [`Query`] execution, and [`Record`]ed
-//! terms.
+//! [`Frame`]s, [`Term`] references, [`Query`] execution, dicts, and
+//! [`Record`]ed terms.
 //!
 //! # Soundness invariants
 //!
@@ -144,6 +144,17 @@
 //!   ([`Record::recall`]) allocates the destination through an [`FliContext`],
 //!   which witnesses that an engine is current.
 //!
+//! Dicts (see `term.rs`):
+//!
+//! - **D1** — Dicts are ordinary [`Term`]s (`TermKind::Dict`); constructing
+//!   ([`Term::put_dict`]) and reading them ([`Term::get_dict`],
+//!   [`Term::dict_tag`]) are generation-checked term operations like any
+//!   other. [`Term::dict_entries`] additionally asserts its context is the
+//!   innermost open scope (C2) before iterating with `PL_for_dict`, because
+//!   each value is copied into a reference allocated in the innermost open
+//!   frame during the callback; the assert proves that frame is the context
+//!   the returned [`Term`]s borrow.
+//!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
 //! generation current — so the thread refuses further plain attaches and
@@ -170,4 +181,6 @@ pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{Query, QueryError, QueryOptions};
 pub use record::{Record, RecordError};
 pub use runtime::{CleanupOptions, Runtime};
-pub use term::{FliContext, Frame, FrameError, PrologException, Term, TermError, TermKind, TermList};
+pub use term::{
+    DictKey, FliContext, Frame, FrameError, PrologException, Term, TermError, TermKind, TermList,
+};
