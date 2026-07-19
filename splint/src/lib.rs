@@ -121,7 +121,9 @@
 //! - **A1** — Every [`Atom`] construction path takes its own
 //!   `PL_register_atom` reference and its drop releases exactly that
 //!   reference, so the count is self-contained and never relies on
-//!   undocumented protection of freshly created atoms.
+//!   undocumented protection of freshly created atoms. Atoms are interned
+//!   (equal text ⇒ equal handle), so `Eq`/`Hash` compare the raw handle,
+//!   which is exact value equality regardless of the borrowed context.
 //! - **A2** — [`Atom`]/[`Functor`]/[`Module`]/[`Predicate`] are
 //!   engine-independent global handles (no generation check); their context
 //!   borrow pins the [`Runtime`] alive, which is all their use and drop
