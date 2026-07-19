@@ -741,6 +741,26 @@ impl<'f> Term<'f> {
         Ok((unsafe { Atom::from_raw(name) }, arity))
     }
 
+    /// Reads the functor of a compound term — or of an atom, as its arity-0
+    /// functor — into a [`Functor`] handle branded to `ctx` (`PL_get_functor`).
+    /// Unlike [`Term::name_arity`], the result is a reusable handle (e.g. for
+    /// [`Term::cons_functor`] or [`Predicate::new`](crate::Predicate::new)).
+    pub fn get_functor<'a, C: FliContext + ?Sized>(
+        &self,
+        ctx: &'a C,
+    ) -> Result<Functor<'a>, TermError> {
+        scope::assert_gen(self.gen, "term");
+        let mut raw: swipl_sys::functor_t = 0;
+        // SAFETY: C3 assert above; the out-pointer is a live stack local.
+        check_get(
+            unsafe { swipl_sys::PL_get_functor(self.raw, &mut raw) },
+            "a compound term or atom",
+        )?;
+        // SAFETY: `raw` is a live functor handle just read from the term;
+        // `ctx` pins the runtime for the returned handle's lifetime (A2).
+        Ok(unsafe { Functor::from_raw(ctx, raw) })
+    }
+
     /// Reads the `index`-th argument (0-based) of a compound term into a
     /// fresh reference allocated from `ctx` (`PL_get_arg_sz`).
     pub fn get_arg<'a, C: FliContext + ?Sized>(
