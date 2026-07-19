@@ -1045,6 +1045,7 @@ impl<'f> Term<'f> {
         let mut collector = DictCollector {
             entries: Vec::new(),
             error: None,
+            alloc_failed: false,
         };
         // SAFETY: `self.raw` is a live dict on the current engine (C3 assert +
         // `PL_is_dict` above); the callback allocates value copies in the
@@ -1057,6 +1058,15 @@ impl<'f> Term<'f> {
                 (&mut collector as *mut DictCollector).cast(),
                 swipl_sys::PL_FOR_DICT_SORTED as c_int,
             );
+        }
+        if collector.alloc_failed {
+            // `PL_new_term_ref` failed mid-iteration; capture and clear the
+            // pending exception now (matching `FliContext::term`'s handling of
+            // the same 0-return) so it cannot leak onto a later operation.
+            return Err(match take_pending_exception() {
+                Some(exception) => TermError::Exception(exception),
+                None => panic!("splint: PL_new_term_ref failed with no pending exception"),
+            });
         }
         if let Some(error) = collector.error {
             return Err(error);
@@ -1162,7 +1172,13 @@ enum RawDictKey {
 /// Accumulates dict entries across [`collect_dict_entry`] invocations.
 struct DictCollector {
     entries: Vec<(RawDictKey, term_t)>,
+    /// A *final* error with no pending Prolog exception (e.g. a malformed
+    /// key), returned to the caller as-is.
     error: Option<TermError>,
+    /// Set when `PL_new_term_ref` failed: a Prolog exception is pending and
+    /// must be captured *after* `PL_for_dict` returns (rendering it inside the
+    /// callback, while already out of stack, is best avoided).
+    alloc_failed: bool,
 }
 
 /// Records one dict entry per invocation (`PL_for_dict` callback). Returns
@@ -1200,9 +1216,10 @@ unsafe extern "C" fn collect_dict_entry(
     // `ctx` scope); the copy outlives this call, unlike `value`.
     let copied = unsafe { swipl_sys::PL_new_term_ref() };
     if copied == 0 {
-        collector.error = Some(TermError::TypeMismatch {
-            expected: "space for a dict value copy",
-        });
+        // Resource exhaustion: a Prolog exception is pending. Flag it so the
+        // caller captures and clears it after iteration, rather than leaving
+        // it to surface on a later, unrelated operation.
+        collector.alloc_failed = true;
         return 1;
     }
     // SAFETY: `copied` and `value` are both live references on the current
