@@ -182,5 +182,6 @@ pub use query::{Query, QueryError, QueryOptions};
 pub use record::{Record, RecordError};
 pub use runtime::{CleanupOptions, Runtime};
 pub use term::{
-    DictKey, FliContext, Frame, FrameError, PrologException, Term, TermError, TermKind, TermList,
+    DictKey, FliContext, Frame, FrameError, ListShape, PrologException, Term, TermError, TermKind,
+    TermList,
 };
