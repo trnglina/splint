@@ -47,6 +47,10 @@ pub enum TermError {
     /// A dict was given a different number of keys than values.
     #[error("dict with {keys} key(s) cannot be built from {values} value(s)")]
     DictLengthMismatch { keys: usize, values: usize },
+    /// A list operation required a proper, acyclic list ending in `[]`, but
+    /// the term's spine was something else (partial, improper, or cyclic).
+    #[error("term is not a proper list ({0:?})")]
+    NotAProperList(ListShape),
     /// The operation raised a Prolog exception (e.g. a resource or syntax
     /// error); the exception has been cleared from the engine.
     #[error("prolog exception: {0}")]
@@ -396,6 +400,23 @@ pub enum TermKind {
     /// A non-empty list cell (`'[|]'/2`).
     ListPair,
     Dict,
+}
+
+/// How [`Term::list_shape`] classifies a term's list spine (`PL_skip_list`),
+/// which walks the spine cycle-safely instead of following it blindly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListShape {
+    /// A proper list ending in `[]`; `len` is the number of elements (`0` for
+    /// the empty list itself).
+    Proper { len: usize },
+    /// A partial list ending in an unbound variable (e.g. `[a | _]`).
+    Partial,
+    /// An improper list ending in a non-list, non-`[]` term (e.g. `[a | b]`).
+    Improper,
+    /// A cyclic list, whose spine would loop forever if followed naively.
+    Cyclic,
+    /// Not a list at all: neither `[]` nor a list cell.
+    NotAList,
 }
 
 /// A handle to a Prolog term: a term reference allocated from an
@@ -753,6 +774,67 @@ impl<'f> Term<'f> {
             "a non-empty list",
         )?;
         Ok((head, tail))
+    }
+
+    /// Classifies the term's list spine (`PL_skip_list`), distinguishing a
+    /// proper list from a partial (`[a|_]`), improper (`[a|b]`), or cyclic
+    /// one. Unlike following [`Term::get_list`] in a loop, this terminates on
+    /// a cyclic list rather than spinning forever.
+    pub fn list_shape(&self) -> ListShape {
+        scope::assert_gen(self.gen, "term");
+        let mut len: usize = 0;
+        // SAFETY: C3 assert above; passing `0` (no term reference) for the
+        // tail tells PL_skip_list not to return the tail, which is not needed
+        // here. PL_skip_list is cycle-safe by construction.
+        let status = unsafe { swipl_sys::PL_skip_list(self.raw, 0, &mut len) };
+        match status as u32 {
+            swipl_sys::PL_LIST => ListShape::Proper { len },
+            swipl_sys::PL_PARTIAL_LIST => ListShape::Partial,
+            swipl_sys::PL_CYCLIC_TERM => ListShape::Cyclic,
+            swipl_sys::PL_NOT_A_LIST => {
+                // PL_skip_list reports NOT_A_LIST both for a term that is not a
+                // list cell at all and for an improper list whose spine ends
+                // in a bound non-`[]` term; the starting term being a pair
+                // distinguishes the latter.
+                // SAFETY: C3 asserted above still holds.
+                if unsafe { swipl_sys::PL_is_pair(self.raw) } {
+                    ListShape::Improper
+                } else {
+                    ListShape::NotAList
+                }
+            }
+            other => panic!("splint: PL_skip_list returned an unrecognized status code {other}"),
+        }
+    }
+
+    /// Collects a proper, acyclic list into a vector of element references
+    /// allocated from `ctx`. A non-proper spine (partial, improper, or cyclic)
+    /// is a [`TermError::NotAProperList`]; because the spine is verified with
+    /// [`Term::list_shape`] first, this never loops on a cyclic list.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ctx` is not the innermost open scope of the thread's current
+    /// engine (C2/C3): the element references are allocated through it.
+    pub fn collect_list<'a, C: FliContext + ?Sized>(
+        &self,
+        ctx: &'a C,
+    ) -> Result<Vec<Term<'a>>, TermError> {
+        scope::assert_gen(self.gen, "term");
+        let len = match self.list_shape() {
+            ListShape::Proper { len } => len,
+            other => return Err(TermError::NotAProperList(other)),
+        };
+        let mut items = Vec::with_capacity(len);
+        // The spine is a verified proper list of `len` cells, so exactly `len`
+        // decompositions reach `[]` — a bounded, cycle-free walk.
+        let mut cursor = self.copy_term_ref(ctx)?;
+        for _ in 0..len {
+            let (head, tail) = cursor.get_list(ctx)?;
+            items.push(head);
+            cursor = tail;
+        }
+        Ok(items)
     }
 
     /// Whether the term is the empty list (`PL_get_nil`).
