@@ -2,12 +2,10 @@ use std::ffi::{CString, NulError};
 use std::os::raw::{c_char, c_int};
 use std::sync::{Mutex, PoisonError};
 
-use thiserror::Error;
-
 use crate::engine::CurrentEngine;
 
 /// Errors from [`Runtime::initialize`] and [`Runtime::initialize_from_state`].
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum InitError {
     /// A [`Runtime`] already exists in this process.
     #[error("the SWI-Prolog runtime is already initialized in this process")]
@@ -34,7 +32,7 @@ pub enum InitError {
 }
 
 /// Why a [`Runtime::cleanup`] call did not tear the runtime down.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum CleanupErrorKind {
     /// An `at_halt/1` hook vetoed the cleanup (`PL_CLEANUP_CANCELED`). The
     /// runtime remains fully initialized.
@@ -55,7 +53,7 @@ pub enum CleanupErrorKind {
 /// A failed [`Runtime::cleanup`]. Carries the still-valid [`Runtime`] back to
 /// the caller: a non-successful cleanup leaves Prolog fully initialized, so
 /// the runtime can be kept in use or the cleanup retried.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 #[error("{kind}")]
 pub struct CleanupError {
     pub runtime: Runtime,

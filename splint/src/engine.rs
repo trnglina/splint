@@ -3,13 +3,12 @@ use std::os::raw::c_int;
 use std::ptr;
 
 use swipl_sys::{PL_engine_t, PL_thread_attr_t};
-use thiserror::Error;
 
 use crate::scope::{self, Activation};
 use crate::Runtime;
 
 /// Errors from [`Engine::new`].
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum EngineCreateError {
     /// `PL_create_engine` returned NULL (creation failed, e.g. resource
     /// limits).
@@ -18,7 +17,7 @@ pub enum EngineCreateError {
 }
 
 /// Errors from [`Engine::attach`] and [`Engine::attach_within`].
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum AttachError {
     /// The engine handle was rejected by SWI-Prolog (`PL_ENGINE_INVAL`).
     #[error("the engine no longer exists")]
