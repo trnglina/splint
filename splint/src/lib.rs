@@ -172,6 +172,15 @@
 //!   frame during the callback; the assert proves that frame is the context
 //!   the returned [`Term`]s borrow.
 //!
+//! Serde (see `serde/`, behind the `serde` feature):
+//!
+//! - **S1** — The serde serializer and deserializer allocate scratch term
+//!   references only through the caller-supplied [`FliContext`] and open no
+//!   scopes of their own (dict reads go through the same public term
+//!   operations as direct use), so they add no scoping rules: the caller's
+//!   context must be the thread's innermost open scope (C2/C3), exactly as
+//!   for direct term allocation.
+//!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
 //! generation current — so the thread refuses further plain attaches and
@@ -191,6 +200,8 @@ mod query;
 mod record;
 mod runtime;
 mod scope;
+#[cfg(feature = "serde")]
+mod serde;
 mod term;
 
 pub use call::ScopedCallError;
@@ -202,6 +213,8 @@ pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{Query, QueryError, QueryOptions, Solutions};
 pub use record::{Record, RecordError};
 pub use runtime::{CleanupError, CleanupErrorKind, CleanupOptions, InitError, Runtime};
+#[cfg(feature = "serde")]
+pub use serde::{from_term, from_terms, to_term, to_terms, Error as SerdeError};
 pub use term::{
     DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,
 };
