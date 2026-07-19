@@ -5,6 +5,7 @@ use std::ptr;
 use swipl_sys::{PL_engine_t, PL_thread_attr_t};
 
 use crate::error::{AttachError, EngineCreateError};
+use crate::scope::{self, Activation};
 use crate::Runtime;
 
 /// Creation attributes for an [`Engine`], mirroring the numeric knobs of
@@ -117,11 +118,16 @@ impl<'r> Engine<'r> {
         // on other threads are serialized by SWI-Prolog's L_THREAD lock.
         let rc = unsafe { swipl_sys::PL_set_engine(self.raw, &mut previous) };
         match rc {
-            _ if rc == swipl_sys::PL_ENGINE_SET as c_int => Ok(AttachedEngine {
-                previous,
-                _borrow: PhantomData,
-                _not_send_sync: PhantomData,
-            }),
+            _ if rc == swipl_sys::PL_ENGINE_SET as c_int => {
+                let (gen, saved_activation) = scope::enter_engine();
+                Ok(AttachedEngine {
+                    previous,
+                    gen,
+                    saved_activation,
+                    _borrow: PhantomData,
+                    _not_send_sync: PhantomData,
+                })
+            }
             _ if rc == swipl_sys::PL_ENGINE_INVAL as c_int => Err(AttachError::Invalid),
             _ if rc == swipl_sys::PL_ENGINE_INUSE as c_int => Err(AttachError::InUse),
             _ => Err(AttachError::Unknown(rc)),
@@ -164,8 +170,26 @@ pub struct AttachedEngine<'e> {
     /// documented detach path (`PL_ENGINE_NONE` must NOT be passed — the C
     /// implementation would dereference it).
     previous: PL_engine_t,
+    /// This attachment's engine generation, minted at attach time; term
+    /// references, frames, and queries created under this guard record it
+    /// and refuse to operate once a different engine is current (C3).
+    gen: u64,
+    /// The thread's activation at attach time, restored on drop in lockstep
+    /// with the `previous` engine restore (C1).
+    saved_activation: Activation,
     _borrow: PhantomData<&'e mut ()>,
     _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl AttachedEngine<'_> {
+    /// The activation this guard's scopes belong to: a fresh generation with
+    /// no frames/queries open yet.
+    pub(crate) fn activation(&self) -> Activation {
+        Activation {
+            gen: self.gen,
+            depth: 0,
+        }
+    }
 }
 
 impl Drop for AttachedEngine<'_> {
@@ -178,6 +202,10 @@ impl Drop for AttachedEngine<'_> {
         // exclusive borrow that outer guards on this thread still hold.
         let mut old: PL_engine_t = ptr::null_mut();
         let _ = unsafe { swipl_sys::PL_set_engine(self.previous, &mut old) };
+        // Restoring the saved activation in lockstep with the engine restore
+        // keeps the record consistent even when guards for different engines
+        // are dropped out of order (C1).
+        scope::restore(self.saved_activation);
     }
 }
 
@@ -190,6 +218,11 @@ impl Drop for AttachedEngine<'_> {
 /// the calling thread's own TLS state (invariant E3).
 pub struct CurrentEngine<'a> {
     raw: PL_engine_t,
+    /// The thread's activation when this witness was created (C1); scopes
+    /// opened through the witness belong to it. For an engine attached
+    /// outside this crate's control (e.g. the main engine), this is the
+    /// initial zero activation.
+    activation: Activation,
     _borrow: PhantomData<&'a Runtime>,
     _not_send_sync: PhantomData<*mut ()>,
 }
@@ -198,9 +231,14 @@ impl CurrentEngine<'_> {
     pub(crate) fn new(raw: PL_engine_t) -> Self {
         CurrentEngine {
             raw,
+            activation: scope::current(),
             _borrow: PhantomData,
             _not_send_sync: PhantomData,
         }
+    }
+
+    pub(crate) fn activation(&self) -> Activation {
+        self.activation
     }
 
     /// The raw engine handle. Exposed for tests and escape hatches.

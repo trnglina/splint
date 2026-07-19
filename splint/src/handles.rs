@@ -1,0 +1,266 @@
+use std::ffi::CString;
+use std::marker::PhantomData;
+use std::os::raw::c_int;
+use std::ptr;
+
+use crate::term::FliContext;
+
+/// An error from constructing a handle.
+#[derive(Debug, thiserror::Error)]
+pub enum HandleError {
+    #[error("PL_new_functor_sz reported failure")]
+    FunctorConstruction,
+    #[error("PL_predicate reported failure")]
+    PredicateConstruction,
+    #[error("name contains an interior NUL byte")]
+    InteriorNul(#[source] std::ffi::NulError),
+}
+
+/// A handle to a Prolog atom, holding one reference on the atom's reference
+/// count.
+///
+/// Atoms are engine-independent global values; the context borrow only
+/// pins the runtime alive (A2). Every construction path registers the
+/// handle unconditionally and `Drop` unregisters it, so the count is
+/// self-contained regardless of how the raw atom was obtained (A1).
+pub struct Atom<'c> {
+    raw: swipl_sys::atom_t,
+    _ctx: PhantomData<&'c ()>,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl<'c> Atom<'c> {
+    /// Creates (or finds) the atom with the given text
+    /// (`PL_new_atom_nchars`).
+    pub fn new<C: FliContext + ?Sized>(_ctx: &'c C, text: &str) -> Atom<'c> {
+        // SAFETY: `_ctx` witnesses the runtime is initialized with an engine
+        // current on this thread; the pointer/length pair is a valid UTF-8
+        // buffer that the call copies. A freshly returned atom already
+        // carries one reference for the caller (A1).
+        let raw = unsafe { swipl_sys::PL_new_atom_nchars(text.len(), text.as_ptr().cast()) };
+        Atom {
+            raw,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    /// Wraps a raw atom handle, taking a fresh reference on it (A1).
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a live atom handle, and the runtime must outlive the
+    /// chosen `'c`.
+    pub(crate) unsafe fn from_raw(raw: swipl_sys::atom_t) -> Atom<'c> {
+        // SAFETY: `raw` is live per this function's contract; registering
+        // keeps it live for this handle's lifetime (A1).
+        unsafe { swipl_sys::PL_register_atom(raw) };
+        Atom {
+            raw,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    /// The atom's text (`PL_atom_nchars`).
+    pub fn text(&self) -> String {
+        let mut len: usize = 0;
+        // SAFETY: `self.raw` is registered and therefore live (A1); the
+        // returned buffer belongs to the atom and is copied before this
+        // handle can be released.
+        let chars = unsafe { swipl_sys::PL_atom_nchars(self.raw, &mut len) };
+        assert!(
+            !chars.is_null(),
+            "splint: PL_atom_nchars reported failure for a live atom"
+        );
+        // SAFETY: on success `chars` points to `len` valid bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(chars.cast::<u8>(), len) };
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// The raw atom handle. Exposed for tests and escape hatches; the handle
+    /// is only guaranteed live while this `Atom` (or another registration)
+    /// exists.
+    #[doc(hidden)]
+    pub fn as_raw(&self) -> swipl_sys::atom_t {
+        self.raw
+    }
+}
+
+impl Clone for Atom<'_> {
+    fn clone(&self) -> Self {
+        // SAFETY: `self.raw` is live (A1); the clone takes its own
+        // reference.
+        unsafe { swipl_sys::PL_register_atom(self.raw) };
+        Atom {
+            raw: self.raw,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+}
+
+impl Drop for Atom<'_> {
+    fn drop(&mut self) {
+        // SAFETY: this handle holds exactly one reference (A1); the `'c`
+        // borrow guarantees the runtime is still initialized.
+        unsafe { swipl_sys::PL_unregister_atom(self.raw) };
+    }
+}
+
+/// A handle to a name/arity pair (`PL_new_functor_sz`). Functors are global
+/// and never garbage collected, so the handle carries no reference count.
+pub struct Functor<'c> {
+    raw: swipl_sys::functor_t,
+    arity: usize,
+    _ctx: PhantomData<&'c ()>,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl<'c> Functor<'c> {
+    /// Creates (or finds) the functor `name/arity`.
+    pub fn new<C: FliContext + ?Sized>(
+        _ctx: &'c C,
+        name: &Atom<'_>,
+        arity: usize,
+    ) -> Result<Functor<'c>, HandleError> {
+        // SAFETY: `_ctx` witnesses the runtime is initialized; `name` is a
+        // live atom (A1).
+        let raw = unsafe { swipl_sys::PL_new_functor_sz(name.as_raw(), arity) };
+        if raw == 0 {
+            return Err(HandleError::FunctorConstruction);
+        }
+        Ok(Functor {
+            raw,
+            arity,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        })
+    }
+
+    /// Creates (or finds) the functor `name/arity` from text.
+    pub fn from_name<C: FliContext + ?Sized>(
+        ctx: &'c C,
+        name: &str,
+        arity: usize,
+    ) -> Result<Functor<'c>, HandleError> {
+        Functor::new(ctx, &Atom::new(ctx, name), arity)
+    }
+
+    pub fn arity(&self) -> usize {
+        self.arity
+    }
+
+    /// The raw functor handle. Exposed for tests and escape hatches.
+    #[doc(hidden)]
+    pub fn as_raw(&self) -> swipl_sys::functor_t {
+        self.raw
+    }
+}
+
+/// A handle to a Prolog module (`PL_new_module`, find-or-create).
+pub struct Module<'c> {
+    raw: swipl_sys::module_t,
+    _ctx: PhantomData<&'c ()>,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl<'c> Module<'c> {
+    /// Finds or creates the module with the given name.
+    pub fn new<C: FliContext + ?Sized>(_ctx: &'c C, name: &Atom<'_>) -> Module<'c> {
+        // SAFETY: `_ctx` witnesses the runtime is initialized; `name` is a
+        // live atom (A1). PL_new_module finds-or-creates and has no failure
+        // sentinel (A3).
+        let raw = unsafe { swipl_sys::PL_new_module(name.as_raw()) };
+        Module {
+            raw,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    /// Finds or creates the module with the given name from text.
+    pub fn by_name<C: FliContext + ?Sized>(ctx: &'c C, name: &str) -> Module<'c> {
+        Module::new(ctx, &Atom::new(ctx, name))
+    }
+
+    /// The raw module handle. Exposed for tests and escape hatches.
+    #[doc(hidden)]
+    pub fn as_raw(&self) -> swipl_sys::module_t {
+        self.raw
+    }
+}
+
+/// A handle to a predicate, the callable unit [`Query`](crate::Query)
+/// executes.
+pub struct Predicate<'c> {
+    raw: swipl_sys::predicate_t,
+    arity: usize,
+    _ctx: PhantomData<&'c ()>,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl<'c> Predicate<'c> {
+    /// The predicate for `functor` in `module` (`PL_pred`).
+    pub fn new<C: FliContext + ?Sized>(
+        _ctx: &'c C,
+        functor: &Functor<'_>,
+        module: &Module<'_>,
+    ) -> Predicate<'c> {
+        // SAFETY: `_ctx` witnesses the runtime is initialized; the functor
+        // and module handles are valid for the runtime's lifetime. PL_pred
+        // finds-or-creates and has no failure sentinel (A3).
+        let raw = unsafe { swipl_sys::PL_pred(functor.as_raw(), module.as_raw()) };
+        Predicate {
+            raw,
+            arity: functor.arity(),
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    /// Resolves `module:name/arity` from text (`PL_predicate`); a `None`
+    /// module means the current (typically `user`) module.
+    pub fn resolve<C: FliContext + ?Sized>(
+        _ctx: &'c C,
+        name: &str,
+        arity: usize,
+        module: Option<&str>,
+    ) -> Result<Predicate<'c>, HandleError> {
+        let name = CString::new(name).map_err(HandleError::InteriorNul)?;
+        let module = module
+            .map(|module| CString::new(module).map_err(HandleError::InteriorNul))
+            .transpose()?;
+        let arity_int = c_int::try_from(arity)
+            .unwrap_or_else(|_| panic!("splint: predicate arity {arity} exceeds c_int"));
+        // SAFETY: `_ctx` witnesses the runtime is initialized; both strings
+        // are NUL-terminated and live across the call, which copies what it
+        // needs.
+        let raw = unsafe {
+            swipl_sys::PL_predicate(
+                name.as_ptr(),
+                arity_int,
+                module.as_ref().map_or(ptr::null(), |module| module.as_ptr()),
+            )
+        };
+        if raw.is_null() {
+            return Err(HandleError::PredicateConstruction);
+        }
+        Ok(Predicate {
+            raw,
+            arity,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        })
+    }
+
+    pub fn arity(&self) -> usize {
+        self.arity
+    }
+
+    /// The raw predicate handle. Exposed for tests and escape hatches.
+    #[doc(hidden)]
+    pub fn as_raw(&self) -> swipl_sys::predicate_t {
+        self.raw
+    }
+}
