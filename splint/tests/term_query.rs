@@ -396,7 +396,7 @@ fn predicate_via_functor_and_module() {
         let frame = ctx.frame().unwrap();
         let module = Module::by_name(&frame, "user");
         let functor = Functor::from_name(&frame, "succ", 2).unwrap();
-        let succ = Predicate::new(&frame, &functor, &module);
+        let succ = Predicate::new(&frame, &functor, &module).unwrap();
 
         let args = frame.terms(2).unwrap();
         args.get(0).put_i64(7).unwrap();
