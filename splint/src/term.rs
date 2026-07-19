@@ -8,6 +8,7 @@ use crate::handles::{Atom, Functor};
 use crate::record::{Record, RecordError};
 use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
+use crate::ScopedCallError;
 
 mod sealed {
     use crate::scope::Activation;
@@ -162,6 +163,57 @@ pub trait FliContext: Sealed {
     /// [`Frame::open`].
     fn frame(&self) -> Result<Frame<'_>, FrameError> {
         Frame::open(self)
+    }
+
+    /// Runs `body` in a nested foreign frame, keeping its bindings when the
+    /// callback returns normally. A panic discards the frame.
+    ///
+    /// The callback receives the frame by shared reference, so it cannot
+    /// close, discard, or leak the frame managed by this method. Use
+    /// [`FliContext::try_with_frame`] when a callback error should roll the
+    /// frame back.
+    ///
+    /// Values allocated in the frame cannot escape:
+    ///
+    /// ```compile_fail
+    /// use splint::{FliContext, Term};
+    ///
+    /// fn escape<'c, C: FliContext>(ctx: &'c C) -> Term<'c> {
+    ///     ctx.with_frame(|frame| frame.term().unwrap()).unwrap()
+    /// }
+    /// ```
+    fn with_frame<R>(&self, body: impl for<'a> FnOnce(&'a Frame<'a>) -> R) -> Result<R, FrameError>
+    where
+        Self: Sized,
+    {
+        let frame = self.frame()?;
+        let result = body(&frame);
+        frame.close();
+        Ok(result)
+    }
+
+    /// Runs a fallible callback in a nested foreign frame.
+    ///
+    /// `Ok` closes the frame and keeps its bindings. `Err` or a panic
+    /// discards it.
+    fn try_with_frame<R, E>(
+        &self,
+        body: impl for<'a> FnOnce(&'a Frame<'a>) -> Result<R, E>,
+    ) -> Result<R, ScopedCallError<FrameError, E>>
+    where
+        Self: Sized,
+    {
+        let frame = self.frame().map_err(ScopedCallError::Operation)?;
+        match body(&frame) {
+            Ok(result) => {
+                frame.close();
+                Ok(result)
+            }
+            Err(error) => {
+                frame.discard();
+                Err(ScopedCallError::Body(error))
+            }
+        }
     }
 }
 

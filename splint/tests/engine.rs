@@ -41,6 +41,43 @@ fn attach_guard_restores_previous_engine() {
     );
 }
 
+#[test]
+fn with_attached_restores_after_return_error_and_panic() {
+    let runtime: &Runtime = &RT;
+    let baseline = runtime.current_engine().map(|e| e.as_raw() as usize);
+    let mut engine = Engine::new(runtime, EngineAttributes::default()).expect("create failed");
+
+    let value = engine
+        .with_attached(|_| runtime.current_engine().unwrap().as_raw() as usize)
+        .expect("attach failed");
+    assert_eq!(value, engine.as_raw() as usize);
+    assert_eq!(
+        runtime.current_engine().map(|e| e.as_raw() as usize),
+        baseline
+    );
+
+    let error = engine
+        .try_with_attached(|_| Err::<(), _>("body failed"))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        splint::ScopedCallError::Body("body failed")
+    ));
+    assert_eq!(
+        runtime.current_engine().map(|e| e.as_raw() as usize),
+        baseline
+    );
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let _ = engine.with_attached(|_| panic!("body panic"));
+    }));
+    assert!(result.is_err());
+    assert_eq!(
+        runtime.current_engine().map(|e| e.as_raw() as usize),
+        baseline
+    );
+}
+
 /// An engine is `Send`: create it here, then attach/use/detach and destroy it
 /// on another thread. A fresh worker thread has no engine attached, so the
 /// detach leaves it with none.
@@ -121,6 +158,27 @@ fn nested_attaches_restore_in_lifo_order() {
         runtime.current_engine().map(|e| e.as_raw() as usize),
         baseline
     );
+}
+
+#[test]
+fn with_attached_within_restores_the_outer_engine() {
+    let runtime: &Runtime = &RT;
+    let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
+    let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
+    let a_ptr = a.as_raw() as usize;
+    let b_ptr = b.as_raw() as usize;
+
+    a.with_attached(|outer| {
+        assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, a_ptr);
+        let current = b
+            .with_attached_within(outer, |_| {
+                runtime.current_engine().unwrap().as_raw() as usize
+            })
+            .expect("nested attach failed");
+        assert_eq!(current, b_ptr);
+        assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, a_ptr);
+    })
+    .expect("outer attach failed");
 }
 
 /// A second plain attach on a thread that already has a crate-managed engine

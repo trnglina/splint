@@ -265,6 +265,47 @@ fn unification_and_frame_data_lifetimes() {
 }
 
 #[test]
+fn frame_closures_commit_success_and_rollback_failure_or_panic() {
+    with_engine(|ctx| {
+        let kept = ctx.term().unwrap();
+        ctx.with_frame(|frame| {
+            let value = frame.term().unwrap();
+            value.put_atom_text("kept").unwrap();
+            assert!(kept.unify(value).unwrap());
+        })
+        .unwrap();
+        assert_eq!(kept.get_text().unwrap(), "kept");
+
+        let failed = ctx.term().unwrap();
+        let error = ctx
+            .try_with_frame(|frame| {
+                let value = frame.term().unwrap();
+                value.put_atom_text("failed").unwrap();
+                assert!(failed.unify(value).unwrap());
+                Err::<(), _>("body failed")
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            splint::ScopedCallError::Body("body failed")
+        ));
+        assert!(failed.is_variable());
+
+        let panicked = ctx.term().unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = ctx.with_frame(|frame| {
+                let value = frame.term().unwrap();
+                value.put_atom_text("panicked").unwrap();
+                assert!(panicked.unify(value).unwrap());
+                panic!("body panic");
+            });
+        }));
+        assert!(result.is_err());
+        assert!(panicked.is_variable());
+    });
+}
+
+#[test]
 fn rewind_frees_references_and_bindings() {
     with_engine(|ctx| {
         let mut frame = ctx.frame().unwrap();
