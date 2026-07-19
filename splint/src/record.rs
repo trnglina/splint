@@ -1,8 +1,9 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use crate::exception::{take_pending_exception, PrologException};
 use crate::runtime::Runtime;
-use crate::term::{take_pending_exception, FliContext, PrologException, Term, TermError};
+use crate::term::{FliContext, Term, TermError};
 
 /// An error from recording or recalling a term.
 #[derive(Debug, thiserror::Error)]
