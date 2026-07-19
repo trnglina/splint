@@ -37,7 +37,7 @@ fn predicate_exposes_name_arity_and_module() {
         let frame = ctx.frame().unwrap();
         let module = Module::by_name(&frame, "user");
         let functor = Functor::from_name(&frame, "succ", 2).unwrap();
-        let predicate = Predicate::new(&frame, &functor, &module);
+        let predicate = Predicate::new(&frame, &functor, &module).unwrap();
 
         assert_eq!(predicate.name(&frame), Atom::new(&frame, "succ"));
         assert_eq!(predicate.arity(), 2);

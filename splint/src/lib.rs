@@ -129,9 +129,11 @@
 //!   borrow pins the [`Runtime`] alive, which is all their use and drop
 //!   require. Bounding them by a context borrow is conservative; relaxing
 //!   to a runtime-lifetime bound is future work.
-//! - **A3** — `PL_new_module` and `PL_pred` find-or-create and have no
-//!   failure sentinel; `PL_new_functor_sz` and `PL_predicate` do and are
-//!   checked.
+//! - **A3** — `PL_new_module` find-or-creates and has no failure sentinel.
+//!   `PL_new_functor_sz`, `PL_pred`, and `PL_predicate` can each fail (e.g. a
+//!   `program_space` resource error), so their zero/null returns are checked;
+//!   any pending Prolog exception is captured and cleared into
+//!   [`HandleError::Exception`], never left to surface on a later operation.
 //!
 //! Records (see `record.rs`):
 //!

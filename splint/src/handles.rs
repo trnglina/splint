@@ -5,17 +5,22 @@ use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
-use crate::term::FliContext;
+use crate::term::{take_pending_exception, FliContext, PrologException};
 
 /// An error from constructing a handle.
 #[derive(Debug, thiserror::Error)]
 pub enum HandleError {
     #[error("PL_new_functor_sz reported failure")]
     FunctorConstruction,
-    #[error("PL_predicate reported failure")]
+    #[error("PL_pred/PL_predicate reported failure")]
     PredicateConstruction,
     #[error("name contains an interior NUL byte")]
     InteriorNul(#[source] std::ffi::NulError),
+    /// Constructing the handle raised a Prolog exception (e.g. a
+    /// program-space resource error); the exception has been cleared from the
+    /// engine.
+    #[error("prolog exception: {0}")]
+    Exception(#[source] PrologException),
 }
 
 /// A handle to a Prolog atom, holding one reference on the atom's reference
@@ -155,7 +160,12 @@ impl<'c> Functor<'c> {
         // live atom (A1).
         let raw = unsafe { swipl_sys::PL_new_functor_sz(name.as_raw(), arity) };
         if raw == 0 {
-            return Err(HandleError::FunctorConstruction);
+            // A zero return can carry a pending resource exception; capture and
+            // clear it so it cannot leak onto a later, unrelated operation.
+            return Err(match take_pending_exception() {
+                Some(exception) => HandleError::Exception(exception),
+                None => HandleError::FunctorConstruction,
+            });
         }
         Ok(Functor {
             raw,
@@ -285,22 +295,33 @@ pub struct Predicate<'c> {
 }
 
 impl<'c> Predicate<'c> {
-    /// The predicate for `functor` in `module` (`PL_pred`).
+    /// The predicate for `functor` in `module` (`PL_pred`, find-or-create).
+    ///
+    /// Fails if the predicate does not exist and cannot be created — e.g. the
+    /// module's `program_space` limit is exhausted, which makes `PL_pred`
+    /// return null and raise a resource exception.
     pub fn new<C: FliContext + ?Sized>(
         _ctx: &'c C,
         functor: &Functor<'_>,
         module: &Module<'_>,
-    ) -> Predicate<'c> {
+    ) -> Result<Predicate<'c>, HandleError> {
         // SAFETY: `_ctx` witnesses the runtime is initialized; the functor
-        // and module handles are valid for the runtime's lifetime. PL_pred
-        // finds-or-creates and has no failure sentinel (A3).
+        // and module handles are valid for the runtime's lifetime.
         let raw = unsafe { swipl_sys::PL_pred(functor.as_raw(), module.as_raw()) };
-        Predicate {
+        if raw.is_null() {
+            // A null return can carry a pending resource exception; capture and
+            // clear it so it cannot leak onto a later, unrelated operation.
+            return Err(match take_pending_exception() {
+                Some(exception) => HandleError::Exception(exception),
+                None => HandleError::PredicateConstruction,
+            });
+        }
+        Ok(Predicate {
             raw,
             arity: functor.arity(),
             _ctx: PhantomData,
             _not_send_sync: PhantomData,
-        }
+        })
     }
 
     /// Resolves `module:name/arity` from text (`PL_predicate`); a `None`
@@ -328,7 +349,12 @@ impl<'c> Predicate<'c> {
             )
         };
         if raw.is_null() {
-            return Err(HandleError::PredicateConstruction);
+            // As in `new`: a null return can carry a pending resource
+            // exception; capture and clear it rather than leaving it pending.
+            return Err(match take_pending_exception() {
+                Some(exception) => HandleError::Exception(exception),
+                None => HandleError::PredicateConstruction,
+            });
         }
         Ok(Predicate {
             raw,
