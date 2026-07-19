@@ -5,7 +5,8 @@ use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
-use crate::term::{take_pending_exception, FliContext, PrologException};
+use crate::exception::{take_pending_exception, PrologException};
+use crate::term::FliContext;
 
 /// An error from constructing a handle.
 #[derive(Debug, thiserror::Error)]

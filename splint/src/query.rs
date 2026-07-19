@@ -2,9 +2,10 @@ use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
+use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
-use crate::term::{take_exception, FliContext, PrologException, Sealed, TermList};
+use crate::term::{FliContext, Sealed, TermList};
 
 /// User-facing options for [`Query::open`], mirroring the exposed subset of
 /// the `PL_Q_*` flag word. `PL_Q_EXT_STATUS` and `PL_Q_CATCH_EXCEPTION` are
@@ -106,7 +107,7 @@ impl<'c> Query<'c> {
         };
         if qid.is_null() {
             scope::close_scope(activation.gen, depth, "query");
-            return Err(match crate::term::take_pending_exception() {
+            return Err(match take_pending_exception() {
                 Some(exception) => QueryError::Exception(exception),
                 None => QueryError::OpenFailed,
             });
@@ -216,7 +217,7 @@ impl<'c> Query<'c> {
         }
         // The query id is already freed at this point; a fresh exception
         // raised while ending the query is pending on the engine itself.
-        match crate::term::take_pending_exception() {
+        match take_pending_exception() {
             Some(exception) => Err(QueryError::Exception(exception)),
             None => Ok(()),
         }
@@ -267,7 +268,7 @@ impl Drop for Query<'_> {
             // A fresh exception raised by closing cannot be propagated from
             // a destructor; clear it (from the engine — the query id is
             // already freed) so the engine is left in a clean state.
-            let _ = crate::term::take_pending_exception();
+            let _ = take_pending_exception();
         } else if !std::thread::panicking() {
             panic!(
                 "splint: query dropped out of order: frames and queries must \

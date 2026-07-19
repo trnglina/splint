@@ -171,6 +171,7 @@
 //! recorded database until the runtime is cleaned up.
 
 mod engine;
+mod exception;
 mod handles;
 mod query;
 mod record;
@@ -181,11 +182,11 @@ mod term;
 pub use engine::{
     AttachError, AttachedEngine, CurrentEngine, Engine, EngineAttributes, EngineCreateError,
 };
+pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{Query, QueryError, QueryOptions};
 pub use record::{Record, RecordError};
 pub use runtime::{CleanupError, CleanupErrorKind, CleanupOptions, InitError, Runtime};
 pub use term::{
-    DictKey, FliContext, Frame, FrameError, ListShape, PrologException, Term, TermError, TermKind,
-    TermList,
+    DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,
 };
