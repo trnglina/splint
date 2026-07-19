@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 
-use swipl_sys::{term_t, PL_fid_t};
+use swipl_sys::{atom_t, functor_t, term_t, PL_fid_t};
 
 use crate::exception::{take_pending_exception, text_from_term, PrologException};
 use crate::handles::{Atom, Functor};
@@ -621,7 +621,7 @@ impl<'f> Term<'f> {
     /// Reads the term as an atom handle (`PL_get_atom`).
     pub fn get_atom(&self) -> Result<Atom<'f>, TermError> {
         scope::assert_gen(self.gen, "term");
-        let mut raw: swipl_sys::atom_t = 0;
+        let mut raw: atom_t = 0;
         // SAFETY: as for `get_i64`.
         check_get(unsafe { swipl_sys::PL_get_atom(self.raw, &mut raw) }, "an atom")?;
         // SAFETY: `raw` is a live atom handle just read from a term;
@@ -667,7 +667,7 @@ impl<'f> Term<'f> {
     /// (`PL_get_compound_name_arity_sz`).
     pub fn name_arity(&self) -> Result<(Atom<'f>, usize), TermError> {
         scope::assert_gen(self.gen, "term");
-        let mut name: swipl_sys::atom_t = 0;
+        let mut name: atom_t = 0;
         let mut arity: usize = 0;
         // SAFETY: C3 assert above; the out-pointers are live stack locals.
         check_get(
@@ -687,7 +687,7 @@ impl<'f> Term<'f> {
         ctx: &'a C,
     ) -> Result<Functor<'a>, TermError> {
         scope::assert_gen(self.gen, "term");
-        let mut raw: swipl_sys::functor_t = 0;
+        let mut raw: functor_t = 0;
         // SAFETY: C3 assert above; the out-pointer is a live stack local.
         check_get(
             unsafe { swipl_sys::PL_get_functor(self.raw, &mut raw) },

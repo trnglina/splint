@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
+use swipl_sys::{atom_t, functor_t, module_t, predicate_t};
+
 use crate::exception::{take_pending_exception, PrologException};
 use crate::term::FliContext;
 
@@ -32,7 +34,7 @@ pub enum HandleError {
 /// handle unconditionally and `Drop` unregisters it, so the count is
 /// self-contained regardless of how the raw atom was obtained (A1).
 pub struct Atom<'c> {
-    raw: swipl_sys::atom_t,
+    raw: atom_t,
     _ctx: PhantomData<&'c ()>,
     _not_send_sync: PhantomData<*mut ()>,
 }
@@ -59,7 +61,7 @@ impl<'c> Atom<'c> {
     ///
     /// `raw` must be a live atom handle, and the runtime must outlive the
     /// chosen `'c`.
-    pub(crate) unsafe fn from_raw(raw: swipl_sys::atom_t) -> Atom<'c> {
+    pub(crate) unsafe fn from_raw(raw: atom_t) -> Atom<'c> {
         // SAFETY: `raw` is live per this function's contract; registering
         // keeps it live for this handle's lifetime (A1).
         unsafe { swipl_sys::PL_register_atom(raw) };
@@ -90,7 +92,7 @@ impl<'c> Atom<'c> {
     /// is only guaranteed live while this `Atom` (or another registration)
     /// exists.
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::atom_t {
+    pub fn as_raw(&self) -> atom_t {
         self.raw
     }
 }
@@ -144,7 +146,7 @@ impl fmt::Debug for Atom<'_> {
 /// A handle to a name/arity pair (`PL_new_functor_sz`). Functors are global
 /// and never garbage collected, so the handle carries no reference count.
 pub struct Functor<'c> {
-    raw: swipl_sys::functor_t,
+    raw: functor_t,
     arity: usize,
     _ctx: PhantomData<&'c ()>,
     _not_send_sync: PhantomData<*mut ()>,
@@ -194,7 +196,7 @@ impl<'c> Functor<'c> {
     /// chosen `'c`.
     pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
         _ctx: &'c C,
-        raw: swipl_sys::functor_t,
+        raw: functor_t,
     ) -> Functor<'c> {
         // SAFETY: `raw` is a live functor handle per this function's contract;
         // functors are global and never garbage collected, so no registration
@@ -222,14 +224,14 @@ impl<'c> Functor<'c> {
 
     /// The raw functor handle. Exposed for tests and escape hatches.
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::functor_t {
+    pub fn as_raw(&self) -> functor_t {
         self.raw
     }
 }
 
 /// A handle to a Prolog module (`PL_new_module`, find-or-create).
 pub struct Module<'c> {
-    raw: swipl_sys::module_t,
+    raw: module_t,
     _ctx: PhantomData<&'c ()>,
     _not_send_sync: PhantomData<*mut ()>,
 }
@@ -262,7 +264,7 @@ impl<'c> Module<'c> {
     /// `raw` must be a live module handle, and the runtime must outlive `'c`.
     pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
         _ctx: &'c C,
-        raw: swipl_sys::module_t,
+        raw: module_t,
     ) -> Module<'c> {
         Module {
             raw,
@@ -281,7 +283,7 @@ impl<'c> Module<'c> {
 
     /// The raw module handle. Exposed for tests and escape hatches.
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::module_t {
+    pub fn as_raw(&self) -> module_t {
         self.raw
     }
 }
@@ -289,7 +291,7 @@ impl<'c> Module<'c> {
 /// A handle to a predicate, the callable unit [`Query`](crate::Query)
 /// executes.
 pub struct Predicate<'c> {
-    raw: swipl_sys::predicate_t,
+    raw: predicate_t,
     arity: usize,
     _ctx: PhantomData<&'c ()>,
     _not_send_sync: PhantomData<*mut ()>,
@@ -371,10 +373,10 @@ impl<'c> Predicate<'c> {
 
     /// Reads the predicate's name, arity, and defining module in one call
     /// (`PL_predicate_info`).
-    fn info(&self) -> (swipl_sys::atom_t, usize, swipl_sys::module_t) {
-        let mut name: swipl_sys::atom_t = 0;
+    fn info(&self) -> (atom_t, usize, module_t) {
+        let mut name: atom_t = 0;
         let mut arity: usize = 0;
-        let mut module: swipl_sys::module_t = ptr::null_mut();
+        let mut module: module_t = ptr::null_mut();
         // SAFETY: `self.raw` is a valid predicate handle (A3); the out-pointers
         // are live stack locals. PL_predicate_info succeeds for a live
         // predicate.
@@ -400,7 +402,7 @@ impl<'c> Predicate<'c> {
 
     /// The raw predicate handle. Exposed for tests and escape hatches.
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::predicate_t {
+    pub fn as_raw(&self) -> predicate_t {
         self.raw
     }
 }
