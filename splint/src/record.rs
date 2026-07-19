@@ -2,7 +2,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use crate::runtime::Runtime;
-use crate::term::{take_pending_exception, FliContext, PrologException, Term};
+use crate::term::{take_pending_exception, FliContext, PrologException, Term, TermError};
 
 /// An error from recording or recalling a term.
 #[derive(Debug, thiserror::Error)]
@@ -78,7 +78,12 @@ impl<'rt> Record<'rt> {
         &self,
         ctx: &'a C,
     ) -> Result<Term<'a>, RecordError> {
-        let dest = ctx.term().map_err(|_| RecordError::Failed)?;
+        // `ctx.term()` already captured and cleared any resource exception;
+        // preserve it rather than flattening it to the generic `Failed`.
+        let dest = ctx.term().map_err(|error| match error {
+            TermError::Exception(exception) => RecordError::Exception(exception),
+            _ => RecordError::Failed,
+        })?;
         self.recall_into(dest)?;
         Ok(dest)
     }
