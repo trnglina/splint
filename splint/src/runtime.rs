@@ -174,8 +174,12 @@ impl Runtime {
     /// [`CleanupError`] so it can be kept in use or the cleanup retried.
     ///
     /// Engines created from this runtime borrow it, so all of them must be
-    /// dropped before `cleanup` can be called; a leaked (forgotten) engine
-    /// will typically surface as [`CleanupErrorKind::Failed`].
+    /// dropped before `cleanup` can be called. A leaked (forgotten) engine
+    /// leaves the outcome up to SWI-Prolog and the platform: `PL_cleanup`
+    /// waits in `exitPrologThreads` for outstanding engines to be destroyed,
+    /// which on some builds surfaces as [`CleanupErrorKind::Failed`] but on
+    /// others blocks indefinitely. Do not rely on a leaked engine producing
+    /// any particular result.
     pub fn cleanup(self, options: CleanupOptions) -> Result<(), CleanupError> {
         let mut guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
         debug_assert!(matches!(*guard, RuntimeState::Initialized));
