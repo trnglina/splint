@@ -216,7 +216,7 @@ impl<'r> Engine<'r> {
     /// to attach or destroy the engine outside this type's control voids the
     /// safety guarantees documented on [`Engine`].
     #[doc(hidden)]
-    pub fn as_ptr(&self) -> PL_engine_t {
+    pub fn as_raw(&self) -> PL_engine_t {
         self.raw
     }
 }
@@ -360,7 +360,7 @@ impl CurrentEngine<'_> {
 
     /// The raw engine handle. Exposed for tests and escape hatches.
     #[doc(hidden)]
-    pub fn as_ptr(&self) -> PL_engine_t {
+    pub fn as_raw(&self) -> PL_engine_t {
         self.raw
     }
 }

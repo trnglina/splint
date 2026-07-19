@@ -23,19 +23,19 @@ fn second_initialize_is_refused() {
 #[test]
 fn attach_guard_restores_previous_engine() {
     let runtime: &Runtime = &RT;
-    let baseline = runtime.current_engine().map(|e| e.as_ptr() as usize);
+    let baseline = runtime.current_engine().map(|e| e.as_raw() as usize);
 
     let mut engine = Engine::new(runtime, EngineAttributes::default()).expect("create failed");
-    let engine_ptr = engine.as_ptr() as usize;
+    let engine_ptr = engine.as_raw() as usize;
     let guard = engine.attach().expect("attach failed");
     assert_eq!(
-        runtime.current_engine().unwrap().as_ptr() as usize,
+        runtime.current_engine().unwrap().as_raw() as usize,
         engine_ptr,
         "attached engine should be current"
     );
     drop(guard);
     assert_eq!(
-        runtime.current_engine().map(|e| e.as_ptr() as usize),
+        runtime.current_engine().map(|e| e.as_raw() as usize),
         baseline,
         "baseline engine should be restored after detach"
     );
@@ -52,10 +52,10 @@ fn engine_is_send_across_threads() {
         scope
             .spawn(move || {
                 let mut engine = engine;
-                let engine_ptr = engine.as_ptr() as usize;
+                let engine_ptr = engine.as_raw() as usize;
                 let guard = engine.attach().expect("cross-thread attach failed");
                 assert_eq!(
-                    runtime.current_engine().unwrap().as_ptr() as usize,
+                    runtime.current_engine().unwrap().as_raw() as usize,
                     engine_ptr
                 );
                 drop(guard);
@@ -78,7 +78,7 @@ fn engine_is_send_across_threads() {
 fn attaching_an_in_use_engine_reports_inuse() {
     let runtime: &Runtime = &RT;
     let mut engine = Engine::new(runtime, EngineAttributes::default()).expect("create failed");
-    let engine_ptr = engine.as_ptr() as usize;
+    let engine_ptr = engine.as_raw() as usize;
     let _guard = engine.attach().expect("attach failed");
     std::thread::scope(|scope| {
         scope
@@ -103,22 +103,22 @@ fn attaching_an_in_use_engine_reports_inuse() {
 #[test]
 fn nested_attaches_restore_in_lifo_order() {
     let runtime: &Runtime = &RT;
-    let baseline = runtime.current_engine().map(|e| e.as_ptr() as usize);
+    let baseline = runtime.current_engine().map(|e| e.as_raw() as usize);
 
     let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
     let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
-    let a_ptr = a.as_ptr() as usize;
-    let b_ptr = b.as_ptr() as usize;
+    let a_ptr = a.as_raw() as usize;
+    let b_ptr = b.as_raw() as usize;
 
     let guard_a = a.attach().expect("attach a failed");
-    assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, a_ptr);
+    assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, a_ptr);
     let guard_b = b.attach_within(&guard_a).expect("attach b failed");
-    assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, b_ptr);
+    assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, b_ptr);
     drop(guard_b);
-    assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, a_ptr);
+    assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, a_ptr);
     drop(guard_a);
     assert_eq!(
-        runtime.current_engine().map(|e| e.as_ptr() as usize),
+        runtime.current_engine().map(|e| e.as_raw() as usize),
         baseline
     );
 }
@@ -160,7 +160,7 @@ fn dropping_past_a_leaked_inner_attachment_panics() {
     let runtime: &Runtime = &RT;
     let mut a = Engine::new(runtime, EngineAttributes::default()).expect("create a failed");
     let mut b = Engine::new(runtime, EngineAttributes::default()).expect("create b failed");
-    let b_ptr = b.as_ptr() as usize;
+    let b_ptr = b.as_raw() as usize;
 
     let guard_a = a.attach().expect("attach a failed");
     let guard_b = b.attach_within(&guard_a).expect("attach b failed");
@@ -173,7 +173,7 @@ fn dropping_past_a_leaked_inner_attachment_panics() {
         "expected the leaked-attachment panic, got: {message}"
     );
     // The leaked attachment is untouched: b is still this thread's engine.
-    assert_eq!(runtime.current_engine().unwrap().as_ptr() as usize, b_ptr);
+    assert_eq!(runtime.current_engine().unwrap().as_raw() as usize, b_ptr);
     // `b` is destroyed on drop below while attached to this thread, which
     // SWI-Prolog permits from the owning thread.
 }
