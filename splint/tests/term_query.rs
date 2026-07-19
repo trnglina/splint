@@ -111,6 +111,40 @@ fn compound_construction_and_decomposition() {
 }
 
 #[test]
+fn get_functor_yields_a_reusable_handle() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let source = frame.term().unwrap();
+        source.put_term_from_text("foo(1, 2, 3)").unwrap();
+
+        let functor = source.get_functor(&frame).unwrap();
+        assert_eq!(functor.arity(), 3);
+
+        // The handle rebuilds an equivalent compound.
+        let args = frame.terms(3).unwrap();
+        for (index, term) in args.iter().enumerate() {
+            term.put_i64(index as i64 + 4).unwrap();
+        }
+        let rebuilt = frame.term().unwrap();
+        rebuilt.cons_functor(&functor, &args).unwrap();
+        assert_eq!(rebuilt.write_to_string().unwrap(), "foo(4,5,6)");
+
+        // An atom is its own arity-0 functor.
+        let atom = frame.term().unwrap();
+        atom.put_atom_text("bar").unwrap();
+        assert_eq!(atom.get_functor(&frame).unwrap().arity(), 0);
+
+        // A non-callable term (an integer) has no functor.
+        let number = frame.term().unwrap();
+        number.put_i64(7).unwrap();
+        assert!(matches!(
+            number.get_functor(&frame),
+            Err(TermError::TypeMismatch { .. })
+        ));
+    });
+}
+
+#[test]
 fn list_construction_and_traversal() {
     with_engine(|ctx| {
         let frame = ctx.frame().unwrap();

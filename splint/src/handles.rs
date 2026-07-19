@@ -174,6 +174,29 @@ impl<'c> Functor<'c> {
         Functor::new(ctx, &Atom::new(ctx, name), arity)
     }
 
+    /// Wraps a raw functor handle (e.g. read from a term), recovering its
+    /// arity with `PL_functor_arity_sz`.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a live functor handle, and the runtime must outlive the
+    /// chosen `'c`.
+    pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
+        _ctx: &'c C,
+        raw: swipl_sys::functor_t,
+    ) -> Functor<'c> {
+        // SAFETY: `raw` is a live functor handle per this function's contract;
+        // functors are global and never garbage collected, so no registration
+        // is needed (A2).
+        let arity = unsafe { swipl_sys::PL_functor_arity_sz(raw) };
+        Functor {
+            raw,
+            arity,
+            _ctx: PhantomData,
+            _not_send_sync: PhantomData,
+        }
+    }
+
     pub fn arity(&self) -> usize {
         self.arity
     }
