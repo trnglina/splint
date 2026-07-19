@@ -54,6 +54,10 @@
 //!   whose generation is no longer current (a leaked inner guard) panics on
 //!   drop instead of restoring through the leak, and the restore's
 //!   `PL_set_engine` status is checked, never assumed.
+//! - **E6** — [`Engine::with_attached`] and its fallible/nested counterparts
+//!   lend the attach guard through a higher-ranked callback. The attachment
+//!   and anything borrowing it cannot escape, so restoration runs before the
+//!   helper returns; unwinding restores through the guard's `Drop`.
 //!
 //! Contexts and scopes (see `scope.rs`, `term.rs`, `query.rs`):
 //!
@@ -99,6 +103,9 @@
 //! - **F6** — Dropping a [`Frame`] *discards* it (undoes bindings), which is
 //!   well-defined regardless of what happened inside, including a panic;
 //!   keeping bindings requires the affirmative [`Frame::close`] call.
+//!   [`FliContext::with_frame`] confines the frame to a callback and closes
+//!   after a normal return; [`FliContext::try_with_frame`] closes on `Ok` and
+//!   discards on `Err`, while unwinding discards through `Drop`.
 //!
 //! Queries (see `query.rs`):
 //!
@@ -170,6 +177,7 @@
 //! than corrupting the stacks. A leaked [`Record`] merely leaves a copy in the
 //! recorded database until the runtime is cleaned up.
 
+mod call;
 mod engine;
 mod exception;
 mod handles;
@@ -179,6 +187,7 @@ mod runtime;
 mod scope;
 mod term;
 
+pub use call::ScopedCallError;
 pub use engine::{
     AttachError, AttachedEngine, CurrentEngine, Engine, EngineAttributes, EngineCreateError,
 };

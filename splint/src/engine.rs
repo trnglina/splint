@@ -6,6 +6,7 @@ use swipl_sys::{PL_engine_t, PL_thread_attr_t};
 
 use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
+use crate::ScopedCallError;
 
 /// Errors from [`Engine::new`].
 #[derive(Debug, thiserror::Error)]
@@ -161,6 +162,44 @@ impl<'r> Engine<'r> {
         self.attach_unchecked()
     }
 
+    /// Attaches this engine for the duration of `body`.
+    ///
+    /// The callback cannot let the attachment or anything borrowed from it
+    /// escape. The previous engine is restored after a normal return or a
+    /// panic. This method is synchronous: attached-engine work must not be
+    /// held across an `.await`, where execution may resume on another OS
+    /// thread.
+    ///
+    /// Values tied to the attachment cannot escape:
+    ///
+    /// ```compile_fail
+    /// use splint::{Engine, FliContext, Term};
+    ///
+    /// fn escape<'r>(engine: &mut Engine<'r>) -> Term<'r> {
+    ///     engine.with_attached(|ctx| ctx.term().unwrap()).unwrap()
+    /// }
+    /// ```
+    pub fn with_attached<R>(
+        &mut self,
+        body: impl for<'a> FnOnce(&'a AttachedEngine<'a>) -> R,
+    ) -> Result<R, AttachError> {
+        let attached = self.attach()?;
+        let result = body(&attached);
+        drop(attached);
+        Ok(result)
+    }
+
+    /// Fallible counterpart to [`Engine::with_attached`].
+    pub fn try_with_attached<R, E>(
+        &mut self,
+        body: impl for<'a> FnOnce(&'a AttachedEngine<'a>) -> Result<R, E>,
+    ) -> Result<R, ScopedCallError<AttachError, E>> {
+        let attached = self.attach().map_err(ScopedCallError::Operation)?;
+        let result = body(&attached);
+        drop(attached);
+        result.map_err(ScopedCallError::Body)
+    }
+
     /// Attaches this engine to the calling thread, nested inside the live
     /// attachment `outer`.
     ///
@@ -179,6 +218,36 @@ impl<'r> Engine<'r> {
             return Err(AttachError::NotInnermost);
         }
         self.attach_unchecked()
+    }
+
+    /// Attaches this engine within `outer` for the duration of `body`.
+    ///
+    /// This is the closure-based counterpart to [`Engine::attach_within`];
+    /// both the nested attachment and values borrowed from it are confined to
+    /// the callback.
+    pub fn with_attached_within<'a, R>(
+        &'a mut self,
+        outer: &'a AttachedEngine<'_>,
+        body: impl for<'b> FnOnce(&'b AttachedEngine<'b>) -> R,
+    ) -> Result<R, AttachError> {
+        let attached = self.attach_within(outer)?;
+        let result = body(&attached);
+        drop(attached);
+        Ok(result)
+    }
+
+    /// Fallible counterpart to [`Engine::with_attached_within`].
+    pub fn try_with_attached_within<'a, R, E>(
+        &'a mut self,
+        outer: &'a AttachedEngine<'_>,
+        body: impl for<'b> FnOnce(&'b AttachedEngine<'b>) -> Result<R, E>,
+    ) -> Result<R, ScopedCallError<AttachError, E>> {
+        let attached = self
+            .attach_within(outer)
+            .map_err(ScopedCallError::Operation)?;
+        let result = body(&attached);
+        drop(attached);
+        result.map_err(ScopedCallError::Body)
     }
 
     /// Shared attach path. Callers must have established that restoring the
