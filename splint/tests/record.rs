@@ -96,6 +96,20 @@ fn record_drops_without_an_engine_attached() {
 }
 
 #[test]
+fn record_is_debug_printable() {
+    let record: Record<'static> = with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_i64(1).unwrap();
+        let record = term.record(&RT).unwrap();
+        frame.close();
+        record
+    });
+    // Debug works without an engine attached (the record is opaque here).
+    assert!(format!("{record:?}").contains("Record"));
+}
+
+#[test]
 fn record_moves_across_threads_and_recalls() {
     let record: Record<'static> = with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
