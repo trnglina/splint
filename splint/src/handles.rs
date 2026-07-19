@@ -1,4 +1,6 @@
 use std::ffi::CString;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
@@ -105,6 +107,31 @@ impl Drop for Atom<'_> {
         // SAFETY: this handle holds exactly one reference (A1); the `'c`
         // borrow guarantees the runtime is still initialized.
         unsafe { swipl_sys::PL_unregister_atom(self.raw) };
+    }
+}
+
+/// Atoms are interned: two atoms with the same text always share the same
+/// handle, so comparing the raw handles is exact value equality (independent
+/// of the borrowed context, hence the free lifetimes).
+impl<'a, 'b> PartialEq<Atom<'b>> for Atom<'a> {
+    fn eq(&self, other: &Atom<'b>) -> bool {
+        self.raw == other.raw
+    }
+}
+
+impl Eq for Atom<'_> {}
+
+impl Hash for Atom<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Consistent with `PartialEq`: equal atoms share a handle, so hashing
+        // the handle keeps `a == b => hash(a) == hash(b)`.
+        self.raw.hash(state);
+    }
+}
+
+impl fmt::Debug for Atom<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Atom").field(&self.text()).finish()
     }
 }
 
