@@ -1,6 +1,8 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use swipl_sys::record_t;
+
 use crate::exception::{take_pending_exception, PrologException};
 use crate::runtime::Runtime;
 use crate::term::{FliContext, Term, TermError};
@@ -39,7 +41,7 @@ pub enum RecordError {
 pub struct Record<'rt> {
     /// Invariant: a live record handle owned by this value, erased exactly
     /// once (by `Drop`, unless leaked).
-    raw: swipl_sys::record_t,
+    raw: record_t,
     _rt: PhantomData<&'rt Runtime>,
 }
 
@@ -61,7 +63,7 @@ impl<'rt> Record<'rt> {
 
     /// Wraps a raw record handle. The caller transfers ownership of exactly
     /// one erase obligation to the returned value.
-    pub(crate) fn from_raw(raw: swipl_sys::record_t) -> Record<'rt> {
+    pub(crate) fn from_raw(raw: record_t) -> Record<'rt> {
         Record {
             raw,
             _rt: PhantomData,
@@ -114,7 +116,7 @@ impl<'rt> Record<'rt> {
     /// outside this type's control voids the safety guarantees documented on
     /// [`Record`].
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::record_t {
+    pub fn as_raw(&self) -> record_t {
         self.raw
     }
 }

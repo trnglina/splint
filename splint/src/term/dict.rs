@@ -11,7 +11,7 @@
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 
-use swipl_sys::term_t;
+use swipl_sys::{atom_t, term_t};
 
 use crate::exception::take_pending_exception;
 use crate::handles::Atom;
@@ -42,7 +42,7 @@ impl<'f> Term<'f> {
                 values: values.len(),
             });
         }
-        let raw_keys: Vec<swipl_sys::atom_t> = keys.iter().map(|atom| atom.as_raw()).collect();
+        let raw_keys: Vec<atom_t> = keys.iter().map(|atom| atom.as_raw()).collect();
         // SAFETY: C3 asserts above cover `self` and the `values` block; `tag`
         // and the key atoms are live handles (A1); `raw_keys` and `values` are
         // both `keys.len()` long (checked above), matching the `len` argument.
@@ -211,7 +211,7 @@ pub enum DictKey<'c> {
 /// stays free of [`Atom`] construction (which the `?Sized` context lifetimes
 /// make awkward inside an `extern "C"` function).
 enum RawDictKey {
-    Atom(swipl_sys::atom_t),
+    Atom(atom_t),
     Int(i64),
 }
 
@@ -244,7 +244,7 @@ unsafe extern "C" fn collect_dict_entry(
     // SAFETY: `closure` is the `DictCollector` pointer passed to `PL_for_dict`,
     // exclusively borrowed here for the duration of this synchronous callback.
     let collector = unsafe { &mut *closure.cast::<DictCollector>() };
-    let mut atom: swipl_sys::atom_t = 0;
+    let mut atom: atom_t = 0;
     // SAFETY: `key`/`value` are live references for this call. Dict keys are
     // atoms or small integers; try each.
     let dict_key = if unsafe { swipl_sys::PL_get_atom(key, &mut atom) } {

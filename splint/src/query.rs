@@ -2,6 +2,8 @@ use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
+use swipl_sys::qid_t;
+
 use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
@@ -57,7 +59,7 @@ pub enum QueryError {
 pub struct Query<'c> {
     /// Invariant: a live query id owned by this value, ended exactly once by
     /// `cut`/`close`/`Drop`.
-    qid: swipl_sys::qid_t,
+    qid: qid_t,
     gen: u64,
     /// The thread's scope depth when this query was opened (C2).
     depth: usize,
@@ -227,7 +229,7 @@ impl<'c> Query<'c> {
     /// query outside this type's control voids the safety guarantees
     /// documented on [`Query`].
     #[doc(hidden)]
-    pub fn as_raw(&self) -> swipl_sys::qid_t {
+    pub fn as_raw(&self) -> qid_t {
         self.qid
     }
 }
