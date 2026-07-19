@@ -134,8 +134,8 @@ impl Runtime {
     ///
     /// Fails with [`InitError::AlreadyInitialized`] if a `Runtime` already
     /// exists. After a successful [`Runtime::cleanup`], a new `Runtime` may
-    /// be initialized, but note that foreign extensions loaded by the
-    /// previous session may not support re-initialization cleanly.
+    /// be initialized, though foreign extensions loaded by the previous
+    /// session may not re-initialize cleanly.
     ///
     /// ```no_run
     /// # fn main() -> Result<(), splint::InitError> {
@@ -157,8 +157,8 @@ impl Runtime {
     /// The buffer must be `'static`: SWI-Prolog does not copy it, but reads
     /// from it lazily for the entire session — during boot and for any later
     /// `open_resource/3` access (invariant R5). Cleanup severs the
-    /// association without freeing the buffer, so re-initializing from the
-    /// same state simply means calling this function again.
+    /// association without freeing the buffer, so the same buffer can be
+    /// reused on a later init.
     ///
     /// ```no_run
     /// # fn main() -> Result<(), splint::InitError> {
@@ -239,10 +239,8 @@ impl Runtime {
         let mut guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
         debug_assert!(matches!(*guard, RuntimeState::Initialized));
 
-        // SAFETY: `self` proves the runtime is initialized (R1).
-        // `PL_cleanup` is internally guarded against concurrent and
-        // recursive invocation and is documented as callable from any
-        // thread; the flag word is built from documented bit masks.
+        // SAFETY: `self` proves the runtime is initialized (R1); `PL_cleanup`
+        // guards itself against concurrent and recursive calls.
         let rc = unsafe { swipl_sys::PL_cleanup(options.into_raw()) };
 
         if rc == swipl_sys::PL_CLEANUP_SUCCESS as c_int {
