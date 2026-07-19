@@ -37,6 +37,28 @@ fn record_survives_its_frame() {
 }
 
 #[test]
+fn record_recalls_into_an_existing_term() {
+    with_engine(|ctx| {
+        let record = {
+            let frame = ctx.frame().unwrap();
+            let term = frame.term().unwrap();
+            term.put_i64(123).unwrap();
+            let record = term.record(&RT).unwrap();
+            frame.close();
+            record
+        };
+
+        let frame = ctx.frame().unwrap();
+        // A pre-existing slot: recall overwrites it in place, then it unifies.
+        let slot = frame.term().unwrap();
+        assert!(slot.is_variable());
+        record.recall_into(slot).unwrap();
+        assert_eq!(slot.get_i64().unwrap(), 123);
+        frame.close();
+    });
+}
+
+#[test]
 fn record_is_engine_independent() {
     // Record on one engine...
     let record: Record<'static> = with_engine(|ctx| {
