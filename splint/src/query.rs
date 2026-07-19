@@ -403,10 +403,7 @@ impl<R, E> Solutions<'_, R, E> {
             .query
             .take()
             .expect("splint: solution iterator lost its open query");
-        match query.close() {
-            Ok(()) => ScopedCallError::Operation(operation),
-            Err(cleanup) => ScopedCallError::OperationAndCleanup { operation, cleanup },
-        }
+        close_after_operation(query, operation)
     }
 
     fn body_error(&mut self, body: E) -> ScopedCallError<QueryError, E> {
@@ -414,10 +411,7 @@ impl<R, E> Solutions<'_, R, E> {
             .query
             .take()
             .expect("splint: solution iterator lost its open query");
-        match query.close() {
-            Ok(()) => ScopedCallError::Body(body),
-            Err(cleanup) => ScopedCallError::BodyAndCleanup { body, cleanup },
-        }
+        close_after_body(query, body)
     }
 }
 
