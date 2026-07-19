@@ -1,3 +1,4 @@
+use std::fmt;
 use std::marker::PhantomData;
 
 use crate::runtime::Runtime;
@@ -109,6 +110,14 @@ impl<'rt> Record<'rt> {
     #[doc(hidden)]
     pub fn as_raw(&self) -> swipl_sys::record_t {
         self.raw
+    }
+}
+
+impl fmt::Debug for Record<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The recorded term is opaque without an engine to recall it into, so
+        // there is nothing meaningful to render beyond the type itself.
+        f.debug_struct("Record").finish_non_exhaustive()
     }
 }
 
