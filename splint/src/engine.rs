@@ -4,8 +4,8 @@ use std::ptr;
 
 use swipl_sys::{PL_engine_t, PL_thread_attr_t};
 
+use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
-use crate::Runtime;
 
 /// Errors from [`Engine::new`].
 #[derive(Debug, thiserror::Error)]
