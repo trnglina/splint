@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    permissions:
+      id-token: write
+      contents: read
+    name: Test workspace
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3.21.7
+
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 4G
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: nix develop --command cargo test --workspace
