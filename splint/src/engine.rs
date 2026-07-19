@@ -3,10 +3,46 @@ use std::os::raw::c_int;
 use std::ptr;
 
 use swipl_sys::{PL_engine_t, PL_thread_attr_t};
+use thiserror::Error;
 
-use crate::error::{AttachError, EngineCreateError};
 use crate::scope::{self, Activation};
 use crate::Runtime;
+
+/// Errors from [`Engine::new`].
+#[derive(Debug, Error)]
+pub enum EngineCreateError {
+    /// `PL_create_engine` returned NULL (creation failed, e.g. resource
+    /// limits).
+    #[error("PL_create_engine failed")]
+    Failed,
+}
+
+/// Errors from [`Engine::attach`] and [`Engine::attach_within`].
+#[derive(Debug, Error)]
+pub enum AttachError {
+    /// The engine handle was rejected by SWI-Prolog (`PL_ENGINE_INVAL`).
+    #[error("the engine no longer exists")]
+    Invalid,
+    /// The engine is currently attached to another thread
+    /// (`PL_ENGINE_INUSE`).
+    #[error("the engine is already attached to another thread")]
+    InUse,
+    /// The calling thread already has an engine attached through this crate;
+    /// nesting requires [`Engine::attach_within`], whose guard keeps the outer
+    /// attachment alive for the restore on drop (invariant E5).
+    #[error(
+        "the calling thread already has an engine attached through this \
+         crate; nest with Engine::attach_within"
+    )]
+    AlreadyAttached,
+    /// The guard passed to [`Engine::attach_within`] is not the calling
+    /// thread's innermost attachment (invariant E5).
+    #[error("the given attach guard is not the calling thread's innermost attachment")]
+    NotInnermost,
+    /// `PL_set_engine` returned a status code this crate does not know.
+    #[error("PL_set_engine returned an unrecognized status code {0}")]
+    Unknown(c_int),
+}
 
 /// Creation attributes for an [`Engine`], mirroring the numeric knobs of
 /// `PL_thread_attr_t`. `alias`, the cancel hook, `thread_class`, and `flags`
