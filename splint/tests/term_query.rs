@@ -337,6 +337,50 @@ fn deterministic_query_binds_output() {
 }
 
 #[test]
+fn query_once_commits_a_solution_and_reports_no_solution() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+        let args = frame.terms(2).unwrap();
+        args.get(0).put_i64(8).unwrap();
+
+        let value = Query::once(&frame, &succ, &args, QueryOptions::default(), |_| {
+            args.get(1).get_i64().unwrap()
+        })
+        .unwrap();
+        assert_eq!(value, Some(9));
+        assert_eq!(args.get(1).get_i64().unwrap(), 9);
+
+        let fail = Predicate::resolve(&frame, "fail", 0, None).unwrap();
+        let no_args = frame.terms(0).unwrap();
+        let value = Query::once(&frame, &fail, &no_args, QueryOptions::default(), |_| 1).unwrap();
+        assert_eq!(value, None);
+        frame.close();
+    });
+}
+
+#[test]
+fn try_once_rolls_back_a_body_error() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+        let args = frame.terms(2).unwrap();
+        args.get(0).put_i64(8).unwrap();
+
+        let error = Query::try_once(&frame, &succ, &args, QueryOptions::default(), |_| {
+            Err::<(), _>("reject solution")
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            splint::ScopedCallError::Body("reject solution")
+        ));
+        assert!(args.get(1).is_variable());
+        frame.close();
+    });
+}
+
+#[test]
 fn nondeterministic_query_enumerates_solutions() {
     with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
@@ -351,6 +395,110 @@ fn nondeterministic_query_enumerates_solutions() {
         }
         assert_eq!(seen, ["a", "b", "c"]);
         query.close().unwrap();
+        frame.close();
+    });
+}
+
+#[test]
+fn solution_iterator_maps_owned_values_and_closes_on_exhaustion() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+        let args = frame.terms(2).unwrap();
+        args.get(1)
+            .put_term_from_text("[f(1), f(2), f(3)]")
+            .unwrap();
+
+        let values = Query::solutions(
+            &frame,
+            &member,
+            &args,
+            QueryOptions::default(),
+            |solution| args.get(0).get_arg(solution, 0).unwrap().get_i64().unwrap(),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(values, [1, 2, 3]);
+        assert!(args.get(0).is_variable());
+        frame.close();
+    });
+}
+
+#[test]
+fn solution_iterator_rolls_back_on_drop_and_can_cut_explicitly() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+
+        let rolled_back = frame.terms(2).unwrap();
+        rolled_back.get(1).put_term_from_text("[a, b]").unwrap();
+        let mut solutions = Query::solutions(
+            &frame,
+            &member,
+            &rolled_back,
+            QueryOptions::default(),
+            |_| (),
+        )
+        .unwrap();
+        assert!(solutions.next().unwrap().is_ok());
+        drop(solutions);
+        assert!(rolled_back.get(0).is_variable());
+
+        let kept = frame.terms(2).unwrap();
+        kept.get(1).put_term_from_text("[a, b]").unwrap();
+        let mut solutions =
+            Query::solutions(&frame, &member, &kept, QueryOptions::default(), |_| ()).unwrap();
+        assert!(solutions.next().unwrap().is_ok());
+        solutions.cut().unwrap();
+        assert_eq!(kept.get(0).get_text().unwrap(), "a");
+        frame.close();
+    });
+}
+
+#[test]
+fn try_solution_iterator_rolls_back_mapper_errors() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+        let args = frame.terms(2).unwrap();
+        args.get(1).put_term_from_text("[a, b]").unwrap();
+
+        let mut solutions =
+            Query::try_solutions(&frame, &member, &args, QueryOptions::default(), |_| {
+                Err::<(), _>("reject solution")
+            })
+            .unwrap();
+        let error = solutions.next().unwrap().unwrap_err();
+        assert!(matches!(
+            error,
+            splint::ScopedCallError::Body("reject solution")
+        ));
+        assert!(solutions.next().is_none());
+        assert!(args.get(0).is_variable());
+        drop(solutions);
+        frame.close();
+    });
+}
+
+#[test]
+fn solution_iterator_rolls_back_a_mapper_panic_even_if_caught() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+        let args = frame.terms(2).unwrap();
+        args.get(1).put_term_from_text("[a, b]").unwrap();
+
+        let mut solutions =
+            Query::solutions(&frame, &member, &args, QueryOptions::default(), |_| {
+                panic!("mapper panic")
+            })
+            .unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| solutions.next()));
+        assert!(result.is_err());
+        assert!(solutions.next().is_none());
+        assert!(args.get(0).is_variable());
+        drop(solutions);
         frame.close();
     });
 }

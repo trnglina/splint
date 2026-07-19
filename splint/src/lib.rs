@@ -122,6 +122,12 @@
 //!   (C2) covers scopes that alias the query's position via a
 //!   [`CurrentEngine`] witness without borrowing it, exactly as F4 does for
 //!   [`Frame::rewind`].
+//! - **Q2** — [`Query::once`] and [`Query::solutions`] lend each current
+//!   solution through a higher-ranked callback, so solution-local references
+//!   cannot escape across a cut, close, or the next backtracking step.
+//!   Solution iteration yields owned mapped values; exhaustion, callback
+//!   failure, panic, and an abandoned iterator close the query, while
+//!   [`Solutions::cut`] is the explicit early-commit path.
 //!
 //! Handles (see `handles.rs`):
 //!
@@ -193,7 +199,7 @@ pub use engine::{
 };
 pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
-pub use query::{Query, QueryError, QueryOptions};
+pub use query::{Query, QueryError, QueryOptions, Solutions};
 pub use record::{Record, RecordError};
 pub use runtime::{CleanupError, CleanupErrorKind, CleanupOptions, InitError, Runtime};
 pub use term::{

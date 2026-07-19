@@ -1,5 +1,7 @@
+use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::os::raw::c_int;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use swipl_sys::qid_t;
@@ -8,6 +10,7 @@ use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
 use crate::term::{FliContext, Sealed, TermList};
+use crate::ScopedCallError;
 
 /// User-facing options for [`Query::open`], mirroring the exposed subset of
 /// the `PL_Q_*` flag word. `PL_Q_EXT_STATUS` and `PL_Q_CATCH_EXCEPTION` are
@@ -124,6 +127,131 @@ impl<'c> Query<'c> {
         })
     }
 
+    /// Runs `body` against the first solution of a newly opened query.
+    ///
+    /// A successful callback cuts the query, keeping that solution's
+    /// bindings. No solution closes the query and returns `Ok(None)`. A panic
+    /// closes the query through its destructor.
+    pub fn once<C, R>(
+        ctx: &'c C,
+        predicate: &Predicate<'_>,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>) -> R,
+    ) -> Result<Option<R>, ScopedCallError<QueryError, Infallible>>
+    where
+        C: FliContext + ?Sized,
+    {
+        let mut query =
+            Query::open(ctx, predicate, args, options).map_err(ScopedCallError::Operation)?;
+        match query.next_solution() {
+            Ok(true) => {
+                let result = body(&query);
+                query.cut().map_err(ScopedCallError::Operation)?;
+                Ok(Some(result))
+            }
+            Ok(false) => {
+                query.close().map_err(ScopedCallError::Operation)?;
+                Ok(None)
+            }
+            Err(operation) => Err(close_after_operation(query, operation)),
+        }
+    }
+
+    /// Fallible counterpart to [`Query::once`].
+    ///
+    /// `Ok` cuts the query and keeps the first solution. `Err` or a panic
+    /// closes it and rolls its bindings back.
+    pub fn try_once<C, R, E>(
+        ctx: &'c C,
+        predicate: &Predicate<'_>,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>) -> Result<R, E>,
+    ) -> Result<Option<R>, ScopedCallError<QueryError, E>>
+    where
+        C: FliContext + ?Sized,
+    {
+        let mut query =
+            Query::open(ctx, predicate, args, options).map_err(ScopedCallError::Operation)?;
+        match query.next_solution() {
+            Ok(true) => match body(&query) {
+                Ok(result) => {
+                    query.cut().map_err(ScopedCallError::Operation)?;
+                    Ok(Some(result))
+                }
+                Err(body) => Err(close_after_body(query, body)),
+            },
+            Ok(false) => {
+                query.close().map_err(ScopedCallError::Operation)?;
+                Ok(None)
+            }
+            Err(operation) => Err(close_after_operation(query, operation)),
+        }
+    }
+
+    /// Opens a query and maps each solution to an owned value.
+    ///
+    /// The returned iterator closes the query on exhaustion or drop. Its
+    /// mapper is invoked while each solution is current and may allocate
+    /// scratch terms through the `&Query` it receives, but its output cannot
+    /// borrow those terms. Use [`Solutions::cut`] after stopping early to
+    /// keep the current solution; simply dropping the iterator rolls it back.
+    ///
+    /// ```compile_fail
+    /// use splint::{FliContext, Predicate, Query, QueryOptions, TermList};
+    ///
+    /// fn escaping_mapper<'c, C: FliContext + ?Sized>(
+    ///     ctx: &'c C,
+    ///     predicate: &Predicate<'_>,
+    ///     args: &TermList<'_>,
+    /// ) {
+    ///     let _ = Query::solutions(ctx, predicate, args, QueryOptions::default(), |query| {
+    ///         query.term().unwrap()
+    ///     });
+    /// }
+    /// ```
+    pub fn solutions<C, R, F>(
+        ctx: &'c C,
+        predicate: &Predicate<'_>,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        mut mapper: F,
+    ) -> Result<Solutions<'c, R, Infallible>, QueryError>
+    where
+        C: FliContext + ?Sized,
+        F: for<'a> FnMut(&'a Query<'c>) -> R + 'c,
+    {
+        let query = Query::open(ctx, predicate, args, options)?;
+        Ok(Solutions {
+            query: Some(query),
+            mapper: Box::new(move |query| Ok(mapper(query))),
+        })
+    }
+
+    /// Fallible counterpart to [`Query::solutions`].
+    ///
+    /// A mapper error closes the query before the error is yielded. If both
+    /// the mapper and closing fail, the iterator preserves both errors in
+    /// [`ScopedCallError::BodyAndCleanup`].
+    pub fn try_solutions<C, R, E, F>(
+        ctx: &'c C,
+        predicate: &Predicate<'_>,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        mapper: F,
+    ) -> Result<Solutions<'c, R, E>, QueryError>
+    where
+        C: FliContext + ?Sized,
+        F: for<'a> FnMut(&'a Query<'c>) -> Result<R, E> + 'c,
+    {
+        let query = Query::open(ctx, predicate, args, options)?;
+        Ok(Solutions {
+            query: Some(query),
+            mapper: Box::new(mapper),
+        })
+    }
+
     /// Advances to the next solution (`PL_next_solution`).
     ///
     /// `Ok(true)` means the argument block now holds a solution; `Ok(false)`
@@ -231,6 +359,126 @@ impl<'c> Query<'c> {
     #[doc(hidden)]
     pub fn as_raw(&self) -> qid_t {
         self.qid
+    }
+}
+
+type SolutionMapper<'c, R, E> = dyn for<'a> FnMut(&'a Query<'c>) -> Result<R, E> + 'c;
+
+/// A mapped iterator over the solutions of a [`Query`].
+///
+/// The query stays open between yielded items. Calling `next` backtracks from
+/// the previous solution before finding another one. Exhaustion and drop
+/// close the query and discard bindings; [`Solutions::cut`] is the explicit
+/// early-success path that keeps the current solution.
+pub struct Solutions<'c, R, E = Infallible> {
+    query: Option<Query<'c>>,
+    mapper: Box<SolutionMapper<'c, R, E>>,
+}
+
+impl<R, E> Solutions<'_, R, E> {
+    /// Ends iteration, keeping the current solution's bindings.
+    ///
+    /// Calling this before a solution has been yielded simply ends the query.
+    /// If iteration has already finished, it is a no-op.
+    pub fn cut(mut self) -> Result<(), QueryError> {
+        match self.query.take() {
+            Some(query) => query.cut(),
+            None => Ok(()),
+        }
+    }
+
+    /// Ends iteration early and discards the query's bindings.
+    ///
+    /// Unlike dropping the iterator, this reports an error raised while
+    /// closing the query.
+    pub fn close(mut self) -> Result<(), QueryError> {
+        match self.query.take() {
+            Some(query) => query.close(),
+            None => Ok(()),
+        }
+    }
+
+    fn operation_error(&mut self, operation: QueryError) -> ScopedCallError<QueryError, E> {
+        let query = self
+            .query
+            .take()
+            .expect("splint: solution iterator lost its open query");
+        match query.close() {
+            Ok(()) => ScopedCallError::Operation(operation),
+            Err(cleanup) => ScopedCallError::OperationAndCleanup { operation, cleanup },
+        }
+    }
+
+    fn body_error(&mut self, body: E) -> ScopedCallError<QueryError, E> {
+        let query = self
+            .query
+            .take()
+            .expect("splint: solution iterator lost its open query");
+        match query.close() {
+            Ok(()) => ScopedCallError::Body(body),
+            Err(cleanup) => ScopedCallError::BodyAndCleanup { body, cleanup },
+        }
+    }
+}
+
+impl<'c, R, E> Iterator for Solutions<'c, R, E> {
+    type Item = Result<R, ScopedCallError<QueryError, E>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let query = self.query.as_mut()?;
+        match query.next_solution() {
+            Ok(true) => {
+                let mapped = catch_unwind(AssertUnwindSafe(|| {
+                    (self.mapper)(
+                        self.query
+                            .as_ref()
+                            .expect("splint: solution iterator lost its open query"),
+                    )
+                }));
+                let mapped = match mapped {
+                    Ok(mapped) => mapped,
+                    Err(payload) => {
+                        // `Solutions` may survive if the caller catches this
+                        // panic around `next`, so close here rather than
+                        // relying on the iterator itself being dropped.
+                        drop(self.query.take());
+                        resume_unwind(payload);
+                    }
+                };
+                Some(match mapped {
+                    Ok(value) => Ok(value),
+                    Err(body) => Err(self.body_error(body)),
+                })
+            }
+            Ok(false) => {
+                let query = self
+                    .query
+                    .take()
+                    .expect("splint: solution iterator lost its open query");
+                match query.close() {
+                    Ok(()) => None,
+                    Err(error) => Some(Err(ScopedCallError::Operation(error))),
+                }
+            }
+            Err(operation) => Some(Err(self.operation_error(operation))),
+        }
+    }
+}
+
+fn close_after_operation<E>(
+    query: Query<'_>,
+    operation: QueryError,
+) -> ScopedCallError<QueryError, E> {
+    match query.close() {
+        Ok(()) => ScopedCallError::Operation(operation),
+        Err(cleanup) => ScopedCallError::OperationAndCleanup { operation, cleanup },
+    }
+}
+
+fn close_after_body<E>(query: Query<'_>, body: E) -> ScopedCallError<QueryError, E> {
+    match query.close() {
+        Ok(()) => ScopedCallError::Body(body),
+        Err(cleanup) => ScopedCallError::BodyAndCleanup { body, cleanup },
     }
 }
 
