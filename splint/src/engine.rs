@@ -17,7 +17,8 @@ pub enum EngineCreateError {
     Failed,
 }
 
-/// Errors from [`Engine::attach`] and [`Engine::attach_within`].
+/// Errors from attaching an engine through the [`Engine::with_attached`]
+/// helper family.
 #[derive(Debug, thiserror::Error)]
 pub enum AttachError {
     /// The engine handle was rejected by SWI-Prolog (`PL_ENGINE_INVAL`).
@@ -28,16 +29,16 @@ pub enum AttachError {
     #[error("the engine is already attached to another thread")]
     InUse,
     /// The calling thread already has an engine attached through this crate;
-    /// nesting requires [`Engine::attach_within`], whose guard keeps the outer
-    /// attachment alive for the restore on drop (invariant E5).
+    /// nesting requires [`Engine::with_attached_within`], whose callback
+    /// keeps the outer attachment alive for restoration (invariant E5).
     #[error(
         "the calling thread already has an engine attached through this \
-         crate; nest with Engine::attach_within"
+         crate; nest with Engine::with_attached_within"
     )]
     AlreadyAttached,
-    /// The guard passed to [`Engine::attach_within`] is not the calling
-    /// thread's innermost attachment (invariant E5).
-    #[error("the given attach guard is not the calling thread's innermost attachment")]
+    /// The witness passed to [`Engine::with_attached_within`] is not the
+    /// calling thread's innermost attachment (invariant E5).
+    #[error("the given attachment witness is not the calling thread's innermost attachment")]
     NotInnermost,
     /// `PL_set_engine` returned a status code this crate does not know.
     #[error("PL_set_engine returned an unrecognized status code {0}")]
@@ -47,8 +48,10 @@ pub enum AttachError {
 /// Creation attributes for an [`Engine`], mirroring the numeric knobs of
 /// `PL_thread_attr_t`. `alias`, the cancel hook, `thread_class`, and `flags`
 /// are not exposed yet: wrapping them safely (string lifetimes, callback ABI)
-/// is future work.
+/// is future work. Create this non-exhaustive options value with
+/// [`EngineAttributes::default`] and then set the desired public fields.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct EngineAttributes {
     /// Total stack limit in bytes (`stack_limit`). `None` uses the default.
     pub stack_limit: Option<usize>,
@@ -60,9 +63,9 @@ pub struct EngineAttributes {
 /// An owned SWI-Prolog engine, created via `PL_create_engine`.
 ///
 /// A freshly created engine is not attached to any thread. Use
-/// [`Engine::attach`] to bind it to the calling thread for the lifetime of
-/// the returned guard. Between attachments the engine may be moved to and
-/// attached from a different thread — SWI-Prolog explicitly supports
+/// [`Engine::with_attached`] to bind it to the calling thread for the
+/// duration of a callback. Between attachments the engine may be moved to
+/// and attached from a different thread — SWI-Prolog explicitly supports
 /// resuming a detached engine elsewhere — which is why `Engine` is [`Send`].
 ///
 /// It is not [`Sync`]: every operation takes `&mut self`, so at most one
@@ -92,9 +95,9 @@ impl<'r> Engine<'r> {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let runtime = splint::Runtime::initialize(["splint", "-q"])?;
     /// let mut engine = splint::Engine::new(&runtime, Default::default())?;
-    /// let guard = engine.attach()?;
-    /// // ... engine-scoped work on this thread ...
-    /// drop(guard); // restores the previously attached engine
+    /// engine.with_attached(|ctx| {
+    ///     // ... engine-scoped work on this thread ...
+    /// })?;
     /// # Ok(()) }
     /// ```
     pub fn new(
@@ -144,9 +147,9 @@ impl<'r> Engine<'r> {
     /// Fails with [`AttachError::AlreadyAttached`] if the thread already has
     /// an engine attached through this crate: the previously attached engine
     /// must outlive the guard for the restore on drop to be sound, which a
-    /// plain attach cannot guarantee for a crate-managed engine — nest with
-    /// [`Engine::attach_within`] instead, whose guard borrows the outer one
-    /// (invariant E5). An engine attached outside this crate's management
+    /// plain attach cannot guarantee for a crate-managed engine — the nested
+    /// attach path instead borrows the outer guard (invariant E5). An engine
+    /// attached outside this crate's management
     /// (e.g. the main engine on the thread that initialized the runtime)
     /// lives as long as the [`Runtime`] this guard pins, so restoring it is
     /// always valid.
@@ -155,7 +158,7 @@ impl<'r> Engine<'r> {
     /// engine attached to this thread indefinitely: the engine can then no
     /// longer be destroyed from another thread and will be leaked, and this
     /// thread refuses further plain attaches.
-    pub fn attach(&mut self) -> Result<AttachedEngine<'_>, AttachError> {
+    fn attach(&mut self) -> Result<AttachedEngine<'_>, AttachError> {
         if scope::current().gen != 0 {
             return Err(AttachError::AlreadyAttached);
         }
@@ -210,7 +213,7 @@ impl<'r> Engine<'r> {
     /// attached elsewhere in the interim (invariant E5). Fails with
     /// [`AttachError::NotInnermost`] if `outer` is not the thread's current
     /// attachment (e.g. a third engine was attached within it already).
-    pub fn attach_within<'a>(
+    fn attach_within<'a>(
         &'a mut self,
         outer: &'a AttachedEngine<'_>,
     ) -> Result<AttachedEngine<'a>, AttachError> {
@@ -222,8 +225,7 @@ impl<'r> Engine<'r> {
 
     /// Attaches this engine within `outer` for the duration of `body`.
     ///
-    /// This is the closure-based counterpart to [`Engine::attach_within`];
-    /// both the nested attachment and values borrowed from it are confined to
+    /// Both the nested attachment and values borrowed from it are confined to
     /// the callback.
     pub fn with_attached_within<'a, R>(
         &'a mut self,
@@ -277,14 +279,6 @@ impl<'r> Engine<'r> {
             _ => Err(AttachError::Unknown(rc)),
         }
     }
-
-    /// The raw engine handle. Exposed for tests and escape hatches; using it
-    /// to attach or destroy the engine outside this type's control voids the
-    /// safety guarantees documented on [`Engine`].
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> PL_engine_t {
-        self.raw
-    }
 }
 
 impl Drop for Engine<'_> {
@@ -300,16 +294,15 @@ impl Drop for Engine<'_> {
     }
 }
 
-/// RAII guard for an engine attached to the current thread; produced by
-/// [`Engine::attach`] and [`Engine::attach_within`].
+/// A callback-scoped witness that an engine is attached to the current
+/// thread, supplied by [`Engine::with_attached`] and
+/// [`Engine::with_attached_within`].
 ///
 /// While alive, the underlying [`Engine`] is exclusively borrowed (invariant
-/// E4): it cannot be moved, dropped, or re-attached. On drop, the thread's
-/// previously attached engine is restored (or the thread is detached if
-/// there was none). Guards for *different* engines may be nested on one
-/// thread through [`Engine::attach_within`]; the nested guard borrows the
-/// outer one, so drops are LIFO by construction and the restore chain is
-/// always valid (invariant E5).
+/// E4): it cannot be moved, dropped, or re-attached. The helper restores the
+/// thread's previous engine after the callback returns or unwinds. Nested
+/// helpers borrow the outer witness, so restoration is LIFO by construction
+/// (invariant E5).
 pub struct AttachedEngine<'e> {
     /// The engine that was current before the attach, restored verbatim on
     /// drop. Null means "no engine": `PL_set_engine(NULL, ..)` is the
@@ -317,7 +310,7 @@ pub struct AttachedEngine<'e> {
     /// implementation would dereference it). Non-null means either an engine
     /// outside this crate's management, pinned alive by the [`Runtime`]
     /// borrow this guard carries, or the engine of the outer guard an
-    /// [`Engine::attach_within`] call borrowed — pinned alive by that borrow
+    /// nested attachment borrowed — pinned alive by that borrow
     /// (invariant E5).
     previous: PL_engine_t,
     /// This attachment's engine generation, minted at attach time; term
@@ -400,7 +393,6 @@ impl Drop for AttachedEngine<'_> {
 /// an attachment it does not own. It is `!Send + !Sync` because it describes
 /// the calling thread's own TLS state (invariant E3).
 pub struct CurrentEngine<'a> {
-    raw: PL_engine_t,
     /// The thread's activation when this witness was created (C1); scopes
     /// opened through the witness belong to it. For an engine attached
     /// outside this crate's control (e.g. the main engine), this is the
@@ -411,9 +403,8 @@ pub struct CurrentEngine<'a> {
 }
 
 impl CurrentEngine<'_> {
-    pub(crate) fn new(raw: PL_engine_t) -> Self {
+    pub(crate) fn new() -> Self {
         CurrentEngine {
-            raw,
             activation: scope::current(),
             _borrow: PhantomData,
             _not_send_sync: PhantomData,
@@ -422,11 +413,5 @@ impl CurrentEngine<'_> {
 
     pub(crate) fn activation(&self) -> Activation {
         self.activation
-    }
-
-    /// The raw engine handle. Exposed for tests and escape hatches.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> PL_engine_t {
-        self.raw
     }
 }

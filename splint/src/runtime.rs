@@ -177,7 +177,7 @@ impl Runtime {
         if raw.is_null() {
             None
         } else {
-            Some(CurrentEngine::new(raw))
+            Some(CurrentEngine::new())
         }
     }
 }
