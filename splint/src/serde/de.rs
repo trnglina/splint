@@ -277,19 +277,13 @@ impl<'x, 'de, 'f, C: FliContext + ?Sized> Deserializer<'de> for TermDeserializer
     {
         if name == record_token::RECORD_TOKEN {
             let raw = crate::record::record_raw(self.term)?;
-            // `self.ctx` witnesses an attached engine, whose borrow chain
-            // pins the one live runtime (R1/R4) for this whole synchronous
-            // call, so the session read here cannot go stale before the
-            // visitor claims it.
-            let session = crate::runtime::current_session()
-                .expect("splint: a deserializing context witnesses an engine with no session");
-            record_token::push_incoming(raw, session);
+            record_token::push_incoming(raw);
             let result = visitor.visit_newtype_struct(record_token::unit_deserializer());
-            if let Some(session) = record_token::take_incoming(raw) {
+            if record_token::take_incoming(raw) {
                 // The visitor never claimed the handle (it errored, or the
                 // target type ignored the newtype payload); erase through the
-                // ordinary session-checked drop path.
-                drop(crate::Record::from_raw(raw, session));
+                // ordinary drop path.
+                drop(crate::Record::from_raw(raw));
             }
             return result;
         }

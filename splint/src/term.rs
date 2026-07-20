@@ -6,7 +6,6 @@ use swipl_sys::{atom_t, functor_t, term_t, PL_fid_t};
 use crate::exception::{take_pending_exception, text_from_term, PrologException};
 use crate::handles::{Atom, Functor};
 use crate::record::{Record, RecordError};
-use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
 use crate::ScopedCallError;
 
@@ -931,14 +930,11 @@ impl<'f> Term<'f> {
     /// database (`PL_record`), returning a [`Record`] that outlives this
     /// term's scope.
     ///
-    /// `runtime` supplies the returned record's lifetime brand, which is
-    /// independent of this term's own scope, so the record survives frame
-    /// close, backtracking, and engine switches.
-    pub fn record<'rt>(&self, _runtime: &'rt Runtime) -> Result<Record<'rt>, RecordError> {
+    /// The record is an independent copy bound to no scope, so it survives
+    /// frame close, backtracking, and engine switches.
+    pub fn record(&self) -> Result<Record, RecordError> {
         let raw = crate::record::record_raw(*self)?;
-        let session = crate::runtime::current_session()
-            .expect("splint: a term passed its generation check with no runtime session current");
-        Ok(Record::from_raw(raw, session))
+        Ok(Record::from_raw(raw))
     }
 
     /// The raw term reference. Exposed for tests and escape hatches; using

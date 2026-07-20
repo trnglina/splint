@@ -472,7 +472,7 @@ fn serializer_contract_violations_surface_as_errors() {
 #[derive(Serialize, Deserialize)]
 struct WithRecord {
     n: i64,
-    rec: Record<'static>,
+    rec: Record,
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn record_field_round_trips_and_survives_its_source_frame() {
             let frame = ctx.frame().unwrap();
             let term = frame.term().unwrap();
             term.put_term_from_text("foo(bar, 42)").unwrap();
-            let rec = Record::of(&RT, term).unwrap();
+            let rec = Record::of(term).unwrap();
             frame.close();
             WithRecord { n: 7, rec }
         };
@@ -526,10 +526,10 @@ fn record_to_and_from_serde_json_fails_cleanly() {
         let frame = ctx.frame().unwrap();
         let term = frame.term().unwrap();
         term.put_i64(1).unwrap();
-        let record = Record::of(&RT, term).unwrap();
+        let record = Record::of(term).unwrap();
 
         assert!(serde_json::to_string(&record).is_err());
-        assert!(serde_json::from_str::<Record<'static>>("null").is_err());
+        assert!(serde_json::from_str::<Record>("null").is_err());
     });
 }
 
@@ -582,7 +582,7 @@ fn unclaimed_incoming_record_is_discarded_without_crashing() {
 #[serde(untagged)]
 #[allow(dead_code)] // only `is_err()` is asserted; the variant payloads are never read
 enum MaybeRecord {
-    Rec(Record<'static>),
+    Rec(Record),
     Num(i64),
 }
 

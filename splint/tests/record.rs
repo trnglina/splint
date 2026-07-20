@@ -23,7 +23,7 @@ fn record_survives_its_frame() {
             let frame = ctx.frame().unwrap();
             let term = frame.term().unwrap();
             term.put_term_from_text("foo(bar, 42)").unwrap();
-            let record = term.record(&RT).unwrap();
+            let record = term.record().unwrap();
             frame.close();
             record
         };
@@ -43,7 +43,7 @@ fn record_recalls_into_an_existing_term() {
             let frame = ctx.frame().unwrap();
             let term = frame.term().unwrap();
             term.put_i64(123).unwrap();
-            let record = term.record(&RT).unwrap();
+            let record = term.record().unwrap();
             frame.close();
             record
         };
@@ -61,11 +61,11 @@ fn record_recalls_into_an_existing_term() {
 #[test]
 fn record_is_engine_independent() {
     // Record on one engine...
-    let record: Record<'static> = with_engine(|ctx| {
+    let record: Record = with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
         let term = frame.term().unwrap();
         term.put_i64(99).unwrap();
-        let record = term.record(&RT).unwrap();
+        let record = term.record().unwrap();
         frame.close();
         record
     });
@@ -84,11 +84,11 @@ fn record_drops_without_an_engine_attached() {
     // Force RT to exist so a record can be made, then drop the record on this
     // harness thread — which has no crate-managed engine attached once
     // `with_engine` returns. Exercises PL_erase's engine-independence.
-    let record: Record<'static> = with_engine(|ctx| {
+    let record: Record = with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
         let term = frame.term().unwrap();
         term.put_i64(7).unwrap();
-        let record = term.record(&RT).unwrap();
+        let record = term.record().unwrap();
         frame.close();
         record
     });
@@ -97,11 +97,11 @@ fn record_drops_without_an_engine_attached() {
 
 #[test]
 fn record_is_debug_printable() {
-    let record: Record<'static> = with_engine(|ctx| {
+    let record: Record = with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
         let term = frame.term().unwrap();
         term.put_i64(1).unwrap();
-        let record = term.record(&RT).unwrap();
+        let record = term.record().unwrap();
         frame.close();
         record
     });
@@ -111,11 +111,11 @@ fn record_is_debug_printable() {
 
 #[test]
 fn record_moves_across_threads_and_recalls() {
-    let record: Record<'static> = with_engine(|ctx| {
+    let record: Record = with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
         let term = frame.term().unwrap();
         term.put_term_from_text("shared(data)").unwrap();
-        let record = term.record(&RT).unwrap();
+        let record = term.record().unwrap();
         frame.close();
         record
     });

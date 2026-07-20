@@ -12,22 +12,30 @@
 //! Runtime (see `runtime.rs`):
 //!
 //! - **R1** — At most one [`Runtime`] exists per process; its existence is
-//!   equivalent to "`PL_initialise` succeeded and no successful cleanup has
-//!   happened since". It is created only by [`Runtime::initialize`] /
-//!   [`Runtime::initialize_from_state`] and consumed only by a successful
-//!   [`Runtime::cleanup`] (a failed cleanup hands the token back).
-//! - **R2** — All calls to `PL_initialise`, `PL_set_resource_db_mem`, and
-//!   `PL_cleanup` are serialized under one private mutex, held across the
-//!   entire FFI call. This compensates for `PL_initialise`'s unlocked
-//!   check-then-act on its own initialized flag.
+//!   equivalent to "`PL_initialise` succeeded". It is created only by
+//!   [`Runtime::initialize`] / [`Runtime::initialize_from_state`], and the
+//!   runtime is never torn down: this crate exposes no cleanup, halt, or
+//!   re-initialization, so once initialized the runtime stays initialized for
+//!   the remainder of the process. Every handle in this crate may therefore
+//!   assume its SWI-Prolog-side store outlives it. The tradeoff is that
+//!   SWI-Prolog is never asked to shut down cleanly: `at_halt/1` hooks do not
+//!   run, Prolog's stream buffers are not flushed, and Prolog threads are not
+//!   joined at process exit.
+//! - **R2** — The `PL_set_resource_db_mem`/`PL_initialise` pair is serialized
+//!   under one private mutex, held across the entire FFI call. This
+//!   compensates for `PL_initialise`'s unlocked check-then-act on its own
+//!   initialized flag.
 //! - **R3** — The argv strings handed to `PL_initialise` are leaked to
 //!   `'static`, because SWI-Prolog retains the pointers.
 //! - **R4** — Everything created from the runtime ([`Engine`],
-//!   [`CurrentEngine`]) borrows it, so `cleanup(self)` statically requires
-//!   that no engines are alive.
+//!   [`CurrentEngine`]) borrows it, which roots the engine borrow chain (E4).
+//!   Nothing consumes the [`Runtime`], so this no longer gates a teardown; it
+//!   remains the anchor that gives engine-derived values a lifetime to be
+//!   ordered within. Any future operation that reclaims runtime state must
+//!   take the `Runtime` by value to inherit that exclusion.
 //! - **R5** — Saved-state buffers are `&'static [u8]`: SWI-Prolog stores the
-//!   pointer and reads from it lazily for the whole session, never copying
-//!   or freeing it.
+//!   pointer and reads from it lazily for the whole life of the runtime,
+//!   never copying or freeing it.
 //!
 //! Engines (see `engine.rs`):
 //!
@@ -151,32 +159,17 @@
 //! Records (see `record.rs`):
 //!
 //! - **RC1** — A [`Record`] is a copy of a term in SWI-Prolog's global,
-//!   lock-protected recorded database. It carries no engine generation because
-//!   that store is engine-independent (like an [`Atom`], A2), and it borrows
-//!   the [`Runtime`] rather than any scope: it may outlive every frame, query,
-//!   and engine. For records made by [`Record::of`]/[`Term::record`] — the
-//!   paths that tie `'rt` to a real `&Runtime` — the borrow also guarantees
-//!   the record is gone before [`Runtime::cleanup`] (R4). Deserialization
-//!   (S2) instead lets the caller choose `'rt` freely, so the borrow alone no
-//!   longer proves the runtime is live; RC2 is the dynamic backstop. A record
-//!   is [`Send`] (records are portable across threads and engines) but not
-//!   `Sync`. Producing one ([`Term::record`]) checks the source term's
-//!   generation (C3); recalling it ([`Record::recall`]) allocates the
-//!   destination through an [`FliContext`], which witnesses that an engine is
-//!   current.
-//! - **RC2** — Each successful [`Runtime::initialize`] mints a
-//!   process-unique *session* (like C1's attachment generations), and every
-//!   [`Record`] is stamped with the session it was made in. Erasing, cloning,
-//!   and recalling check the stamp against the current session: `Drop` checks
-//!   and erases under the runtime-state mutex (R2) — so a concurrent cleanup
-//!   cannot interleave — and silently skips a stale record, whose store
-//!   already died with its session; `Clone` likewise checks and duplicates
-//!   under the mutex, but panics on staleness; [`Record::recall`]/
-//!   [`Record::recall_into`] panic on staleness after a brief locked read,
-//!   with no lock held across `PL_recorded` — sound because the destination's
-//!   context sits on a borrow chain ending at the one live [`Runtime`]
-//!   (R1/R4), so no cleanup can run concurrently. Violations panic; they are
-//!   never UB.
+//!   lock-protected recorded database. It is a plain owned handle, erased
+//!   exactly once on drop, and carries neither a lifetime nor an engine
+//!   generation: its store is engine-independent (like an [`Atom`], A2) and
+//!   outlives every record, because the runtime is never torn down (R1). A
+//!   record may therefore outlive every frame, query, and engine, and be
+//!   minted with no `&Runtime` in scope at all — which is what lets
+//!   deserialization (S2) produce one. It is [`Send`] (records are portable
+//!   across threads and engines) but not `Sync`. Producing one
+//!   ([`Term::record`]) checks the source term's generation (C3); recalling it
+//!   ([`Record::recall`]) allocates the destination through an
+//!   [`FliContext`], which witnesses that an engine is current.
 //!
 //! Dicts (see `term.rs`):
 //!
@@ -203,19 +196,17 @@
 //!   errors. A forged token call finds the handoff empty and fails without
 //!   reaching FFI with a fabricated handle; foreign formats and serde's
 //!   internally buffered positions (untagged/internally-tagged enums,
-//!   flatten) fail the same clean way. A record minted by deserialization is
-//!   stamped with the session current under the deserializing context (RC2).
+//!   flatten) fail the same clean way.
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
 //! generation current — so the thread refuses further plain attaches and
 //! dropping an outer guard panics rather than restoring through the leak
-//! (E5) — a leaked engine leaves a C engine outstanding (making a later
-//! cleanup report failure), and a leaked runtime merely prevents cleanup. A
-//! leaked frame or query leaves its C-side scope open and its depth
-//! registered, so closing any outer scope afterwards panics (C2) rather
-//! than corrupting the stacks. A leaked [`Record`] merely leaves a copy in the
-//! recorded database until the runtime is cleaned up; likewise a panic
+//! (E5) — and a leaked engine merely leaves a C engine outstanding for the
+//! life of the process. A leaked frame or query leaves its C-side scope open
+//! and its depth registered, so closing any outer scope afterwards panics
+//! (C2) rather than corrupting the stacks. A leaked [`Record`] merely leaves a
+//! copy in the recorded database for the life of the process; likewise a panic
 //! unwinding through a custom visitor mid-deserialize can strand an unclaimed
 //! record in the S2 handoff, which leaks the same way — this crate does not
 //! attempt panic-safety there, matching its stance on leaked frames and
@@ -241,7 +232,7 @@ pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{Query, QueryError, QueryOptions, Solutions};
 pub use record::{Record, RecordError};
-pub use runtime::{CleanupError, CleanupErrorKind, CleanupOptions, InitError, Runtime};
+pub use runtime::{InitError, Runtime};
 #[cfg(feature = "serde")]
 pub use serde::{from_term, from_terms, to_term, to_terms, Error as SerdeError};
 pub use term::{

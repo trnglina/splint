@@ -13,7 +13,6 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::marker::PhantomData;
 
 use ::serde::de::{Error as _, IntoDeserializer, Visitor};
 use ::serde::ser::Error as _;
@@ -21,7 +20,6 @@ use ::serde::{Deserialize, Deserializer, Serialize, Serializer};
 use swipl_sys::record_t;
 
 use crate::record::Record;
-use crate::runtime;
 
 /// Private newtype-struct name used to pass a [`Record`] through serde.
 /// Collision-free with derived struct names, which come from `stringify!` and
@@ -32,9 +30,9 @@ thread_local! {
     /// Record handles in flight from [`Record::serialize`] to the splint
     /// serializer's token branch.
     static OUTGOING: RefCell<Vec<record_t>> = const { RefCell::new(Vec::new()) };
-    /// `(handle, session)` pairs in flight from the splint deserializer's
-    /// token branch to [`RecordVisitor`].
-    static INCOMING: RefCell<Vec<(record_t, u64)>> = const { RefCell::new(Vec::new()) };
+    /// Record handles in flight from the splint deserializer's token branch
+    /// to [`RecordVisitor`].
+    static INCOMING: RefCell<Vec<record_t>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Takes the record handle most recently offered by [`Record::serialize`],
@@ -59,23 +57,26 @@ fn remove_outgoing(raw: record_t) {
 }
 
 /// Offers a freshly recorded handle to [`RecordVisitor`].
-pub(super) fn push_incoming(raw: record_t, session: u64) {
-    INCOMING.with(|stack| stack.borrow_mut().push((raw, session)));
+pub(super) fn push_incoming(raw: record_t) {
+    INCOMING.with(|stack| stack.borrow_mut().push(raw));
 }
 
-fn pop_incoming() -> Option<(record_t, u64)> {
+fn pop_incoming() -> Option<record_t> {
     INCOMING.with(|stack| stack.borrow_mut().pop())
 }
 
-/// Removes `raw` if the visitor never claimed it, returning its session so
-/// the caller can erase the now-ownerless record.
-pub(super) fn take_incoming(raw: record_t) -> Option<u64> {
+/// Removes `raw` if the visitor never claimed it, reporting whether it was
+/// still there so the caller can erase the now-ownerless record.
+pub(super) fn take_incoming(raw: record_t) -> bool {
     INCOMING.with(|stack| {
         let mut stack = stack.borrow_mut();
-        stack
-            .iter()
-            .position(|(candidate, _)| *candidate == raw)
-            .map(|index| stack.swap_remove(index).1)
+        match stack.iter().position(|candidate| *candidate == raw) {
+            Some(index) => {
+                stack.swap_remove(index);
+                true
+            }
+            None => false,
+        }
     })
 }
 
@@ -94,20 +95,8 @@ impl Serialize for ForeignRecordGuard {
     }
 }
 
-impl Serialize for Record<'_> {
+impl Serialize for Record {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // A stale record is a serde error, not a panic: unlike recall/clone,
-        // serialization can legitimately run with no runtime borrow anywhere
-        // in scope (e.g. `serde_json::to_string`), so there is no violated
-        // contract — just a value that can no longer be represented. For the
-        // splint serializer the check cannot go stale before the recall in
-        // the token branch: `to_term`'s ctx borrow chain pins the runtime
-        // for the whole call (R1/R4).
-        if !runtime::session_is_current(self.session()) {
-            return Err(S::Error::custom(
-                "splint: cannot serialize a record from a runtime session that is no longer current",
-            ));
-        }
         let raw = self.as_raw();
         push_outgoing(raw);
         let result = serializer.serialize_newtype_struct(RECORD_TOKEN, &ForeignRecordGuard);
@@ -116,29 +105,29 @@ impl Serialize for Record<'_> {
     }
 }
 
-struct RecordVisitor<'rt>(PhantomData<&'rt ()>);
+struct RecordVisitor;
 
-impl<'de, 'rt> Visitor<'de> for RecordVisitor<'rt> {
-    type Value = Record<'rt>;
+impl<'de> Visitor<'de> for RecordVisitor {
+    type Value = Record;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a splint record")
     }
 
-    fn visit_newtype_struct<D: Deserializer<'de>>(self, _: D) -> Result<Record<'rt>, D::Error> {
+    fn visit_newtype_struct<D: Deserializer<'de>>(self, _: D) -> Result<Record, D::Error> {
         // An empty stack means the token call was not driven by the splint
         // deserializer: a foreign format, or a Content-buffered position
         // (untagged/internally-tagged enums, `#[serde(flatten)]`).
-        let (raw, session) = pop_incoming().ok_or_else(|| {
+        let raw = pop_incoming().ok_or_else(|| {
             D::Error::custom("splint records can only be deserialized from Prolog terms")
         })?;
-        Ok(Record::from_raw(raw, session))
+        Ok(Record::from_raw(raw))
     }
 }
 
-impl<'de, 'rt> Deserialize<'de> for Record<'rt> {
+impl<'de> Deserialize<'de> for Record {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_newtype_struct(RECORD_TOKEN, RecordVisitor(PhantomData))
+        deserializer.deserialize_newtype_struct(RECORD_TOKEN, RecordVisitor)
     }
 }
 

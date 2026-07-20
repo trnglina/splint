@@ -19,8 +19,3 @@ serde_json = "1"
 name = "serde"
 path = "tests/serde.rs"
 required-features = ["serde"]
-
-[[test]]
-name = "record_session"
-path = "tests/record_session.rs"
-required-features = ["serde"]
