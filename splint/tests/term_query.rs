@@ -2,7 +2,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::LazyLock;
 
 use splint::{
-    AttachedEngine, Engine, EngineAttributes, FliContext, Frame, Functor, Module, Predicate, Query,
+    AttachedEngine, Engine, EngineAttributes, FliContext, Functor, Module, Predicate, Query,
     QueryError, QueryOptions, Runtime, TermError, TermKind,
 };
 
@@ -15,15 +15,16 @@ static RT: LazyLock<Runtime> = LazyLock::new(|| {
 /// its own.
 fn with_engine<R>(body: impl FnOnce(&AttachedEngine<'_>) -> R) -> R {
     let mut engine = Engine::new(&RT, EngineAttributes::default()).expect("engine create failed");
-    let ctx = engine.attach().expect("attach failed");
-    body(&ctx)
+    engine.with_attached(body).expect("attach failed")
+}
+
+fn with_frame<R>(body: impl for<'a> FnOnce(&'a splint::Frame<'a>) -> R) -> R {
+    with_engine(|ctx| ctx.with_frame(body).unwrap())
 }
 
 #[test]
 fn scalar_roundtrips() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-
+    with_frame(|frame| {
         let t = frame.term().unwrap();
         assert!(t.is_variable());
         assert_eq!(t.kind(), TermKind::Variable);
@@ -53,16 +54,13 @@ fn scalar_roundtrips() {
         t.put_nil().unwrap();
         assert!(t.is_nil());
         assert_eq!(t.kind(), TermKind::Nil);
-
-        frame.close();
     });
 }
 
 #[test]
 fn atoms_and_put_term_copy() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let atom = splint::Atom::new(&frame, "flurble");
+    with_frame(|frame| {
+        let atom = splint::Atom::new(frame, "flurble");
         assert_eq!(atom.text(), "flurble");
         let cloned = atom.clone();
 
@@ -73,17 +71,15 @@ fn atoms_and_put_term_copy() {
         let copy = frame.term().unwrap();
         copy.put_term(t).unwrap();
         assert_eq!(copy.get_text().unwrap(), "flurble");
-        // No explicit close: the atoms borrow the frame and drop after it in
-        // reverse declaration order, which a consuming `close(self)` cannot
-        // wait for (A2).
+        // Atom handles are process-global and own their registrations, so
+        // they do not borrow the frame that was used to create them (A2).
     });
 }
 
 #[test]
 fn compound_construction_and_decomposition() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let functor = Functor::from_name(&frame, "foo", 3).unwrap();
+    with_frame(|frame| {
+        let functor = Functor::from_name(frame, "foo", 3).unwrap();
         let args = frame.terms(3).unwrap();
         for (index, term) in args.iter().enumerate() {
             term.put_i64(index as i64 + 1).unwrap();
@@ -96,7 +92,7 @@ fn compound_construction_and_decomposition() {
         let (name, arity) = t.name_arity().unwrap();
         assert_eq!(name.text(), "foo");
         assert_eq!(arity, 3);
-        assert_eq!(t.get_arg(&frame, 1).unwrap().get_i64().unwrap(), 2);
+        assert_eq!(t.get_arg(frame, 1).unwrap().get_i64().unwrap(), 2);
         assert_eq!(t.write_to_string().unwrap(), "foo(1,2,3)");
 
         let wrong_args = frame.terms(2).unwrap();
@@ -112,13 +108,12 @@ fn compound_construction_and_decomposition() {
 
 #[test]
 fn compound_arguments_reject_an_unrepresentable_index() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+    with_frame(|frame| {
         let term = frame.term().unwrap();
         term.put_term_from_text("f(x)").unwrap();
 
         assert!(matches!(
-            term.get_arg(&frame, usize::MAX),
+            term.get_arg(frame, usize::MAX),
             Err(TermError::ArgumentIndexOutOfRange { index: usize::MAX })
         ));
     });
@@ -126,12 +121,11 @@ fn compound_arguments_reject_an_unrepresentable_index() {
 
 #[test]
 fn get_functor_yields_a_reusable_handle() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+    with_frame(|frame| {
         let source = frame.term().unwrap();
         source.put_term_from_text("foo(1, 2, 3)").unwrap();
 
-        let functor = source.get_functor(&frame).unwrap();
+        let functor = source.get_functor().unwrap();
         assert_eq!(functor.arity(), 3);
 
         // The handle rebuilds an equivalent compound.
@@ -146,13 +140,13 @@ fn get_functor_yields_a_reusable_handle() {
         // An atom is its own arity-0 functor.
         let atom = frame.term().unwrap();
         atom.put_atom_text("bar").unwrap();
-        assert_eq!(atom.get_functor(&frame).unwrap().arity(), 0);
+        assert_eq!(atom.get_functor().unwrap().arity(), 0);
 
         // A non-callable term (an integer) has no functor.
         let number = frame.term().unwrap();
         number.put_i64(7).unwrap();
         assert!(matches!(
-            number.get_functor(&frame),
+            number.get_functor(),
             Err(TermError::TypeMismatch { .. })
         ));
     });
@@ -160,9 +154,7 @@ fn get_functor_yields_a_reusable_handle() {
 
 #[test]
 fn list_construction_and_traversal() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-
+    with_frame(|frame| {
         // Build [1, 2, 3] back to front.
         let mut tail = frame.term().unwrap();
         tail.put_nil().unwrap();
@@ -178,19 +170,17 @@ fn list_construction_and_traversal() {
         let mut seen = Vec::new();
         let mut cursor = tail;
         while !cursor.is_nil() {
-            let (head, rest) = cursor.get_list(&frame).unwrap();
+            let (head, rest) = cursor.get_list(frame).unwrap();
             seen.push(head.get_i64().unwrap());
             cursor = rest;
         }
         assert_eq!(seen, [1, 2, 3]);
-        frame.close();
     });
 }
 
 #[test]
 fn parse_from_text() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+    with_frame(|frame| {
         let t = frame.term().unwrap();
         t.put_term_from_text("foo(bar, 1+2)").unwrap();
         let (name, arity) = t.name_arity().unwrap();
@@ -213,8 +203,7 @@ fn parse_from_text() {
 
 #[test]
 fn type_mismatch_is_not_an_exception() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+    with_frame(|frame| {
         let t = frame.term().unwrap();
         t.put_atom_text("not_a_number").unwrap();
         assert!(matches!(t.get_i64(), Err(TermError::TypeMismatch { .. })));
@@ -223,15 +212,12 @@ fn type_mismatch_is_not_an_exception() {
         assert!(matches!(t.get_text(), Err(TermError::TypeMismatch { .. })));
         // ...but write_to_string renders it.
         assert_eq!(t.write_to_string().unwrap(), "f(x)");
-        frame.close();
     });
 }
 
 #[test]
 fn unification_and_frame_data_lifetimes() {
-    with_engine(|ctx| {
-        let outer = ctx.frame().unwrap();
-
+    with_frame(|outer| {
         // unify: variable-atom succeeds, distinct integers fail cleanly.
         let one = outer.term().unwrap();
         one.put_i64(1).unwrap();
@@ -241,37 +227,27 @@ fn unification_and_frame_data_lifetimes() {
 
         // A binding made inside a closed frame survives.
         let kept = outer.term().unwrap();
-        {
-            let inner = outer.frame().unwrap();
-            let value = inner.term().unwrap();
-            value.put_atom_text("kept").unwrap();
-            assert!(kept.unify(value).unwrap());
-            inner.close();
-        }
+        outer
+            .with_frame(|inner| {
+                let value = inner.term().unwrap();
+                value.put_atom_text("kept").unwrap();
+                assert!(kept.unify(value).unwrap());
+            })
+            .unwrap();
         assert_eq!(kept.get_text().unwrap(), "kept");
 
         // A binding made inside a discarded frame is undone.
         let lost = outer.term().unwrap();
-        {
-            let inner = outer.frame().unwrap();
-            let value = inner.term().unwrap();
-            value.put_atom_text("lost").unwrap();
-            assert!(lost.unify(value).unwrap());
-            inner.discard();
-        }
+        let error = outer
+            .try_with_frame(|inner| {
+                let value = inner.term().unwrap();
+                value.put_atom_text("lost").unwrap();
+                assert!(lost.unify(value).unwrap());
+                Err::<(), _>("discard")
+            })
+            .unwrap_err();
+        assert!(matches!(error, splint::ScopedCallError::Body("discard")));
         assert!(lost.is_variable());
-
-        // Dropping a frame discards it, like `discard`.
-        let dropped = outer.term().unwrap();
-        {
-            let inner = outer.frame().unwrap();
-            let value = inner.term().unwrap();
-            value.put_i64(9).unwrap();
-            assert!(dropped.unify(value).unwrap());
-        }
-        assert!(dropped.is_variable());
-
-        outer.close();
     });
 }
 
@@ -332,53 +308,48 @@ fn rewind_frees_references_and_bindings() {
 
 #[test]
 fn deterministic_query_binds_output() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+    with_frame(|frame| {
+        let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(0).put_i64(1).unwrap();
+        args.get(0).unwrap().put_i64(1).unwrap();
 
-        let mut query = Query::open(&frame, &succ, &args, QueryOptions::default()).unwrap();
-        assert!(query.next_solution().unwrap());
-        assert_eq!(args.get(1).get_i64().unwrap(), 2);
-        assert!(!query.next_solution().unwrap());
-        query.close().unwrap();
-        frame.close();
+        let found = Query::once(frame, &succ, &args, QueryOptions::default(), |_| ())
+            .unwrap()
+            .is_some();
+        assert!(found);
+        assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 2);
     });
 }
 
 #[test]
 fn query_once_commits_a_solution_and_reports_no_solution() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+    with_frame(|frame| {
+        let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(0).put_i64(8).unwrap();
+        args.get(0).unwrap().put_i64(8).unwrap();
 
-        let value = Query::once(&frame, &succ, &args, QueryOptions::default(), |_| {
-            args.get(1).get_i64().unwrap()
+        let value = Query::once(frame, &succ, &args, QueryOptions::default(), |_| {
+            args.get(1).unwrap().get_i64().unwrap()
         })
         .unwrap();
         assert_eq!(value, Some(9));
-        assert_eq!(args.get(1).get_i64().unwrap(), 9);
+        assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 9);
 
-        let fail = Predicate::resolve(&frame, "fail", 0, None).unwrap();
+        let fail = Predicate::from_name(frame, "fail", 0, None).unwrap();
         let no_args = frame.terms(0).unwrap();
-        let value = Query::once(&frame, &fail, &no_args, QueryOptions::default(), |_| 1).unwrap();
+        let value = Query::once(frame, &fail, &no_args, QueryOptions::default(), |_| 1).unwrap();
         assert_eq!(value, None);
-        frame.close();
     });
 }
 
 #[test]
 fn try_once_rolls_back_a_body_error() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+    with_frame(|frame| {
+        let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(0).put_i64(8).unwrap();
+        args.get(0).unwrap().put_i64(8).unwrap();
 
-        let error = Query::try_once(&frame, &succ, &args, QueryOptions::default(), |_| {
+        let error = Query::try_once(frame, &succ, &args, QueryOptions::default(), |_| {
             Err::<(), _>("reject solution")
         })
         .unwrap_err();
@@ -386,66 +357,69 @@ fn try_once_rolls_back_a_body_error() {
             error,
             splint::ScopedCallError::Body("reject solution")
         ));
-        assert!(args.get(1).is_variable());
-        frame.close();
+        assert!(args.get(1).unwrap().is_variable());
     });
 }
 
 #[test]
 fn nondeterministic_query_enumerates_solutions() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(1).put_term_from_text("[a, b, c]").unwrap();
+        args.get(1)
+            .unwrap()
+            .put_term_from_text("[a, b, c]")
+            .unwrap();
 
-        let mut query = Query::open(&frame, &member, &args, QueryOptions::default()).unwrap();
-        let mut seen = Vec::new();
-        while query.next_solution().unwrap() {
-            seen.push(args.get(0).get_text().unwrap());
-        }
+        let seen = Query::solutions(frame, &member, &args, QueryOptions::default(), |_| {
+            args.get(0).unwrap().get_text().unwrap()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
         assert_eq!(seen, ["a", "b", "c"]);
-        query.close().unwrap();
-        frame.close();
     });
 }
 
 #[test]
 fn solution_iterator_maps_owned_values_and_closes_on_exhaustion() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
         args.get(1)
+            .unwrap()
             .put_term_from_text("[f(1), f(2), f(3)]")
             .unwrap();
 
-        let values = Query::solutions(
-            &frame,
-            &member,
-            &args,
-            QueryOptions::default(),
-            |solution| args.get(0).get_arg(solution, 0).unwrap().get_i64().unwrap(),
-        )
+        let values = Query::solutions(frame, &member, &args, QueryOptions::default(), |solution| {
+            args.get(0)
+                .unwrap()
+                .get_arg(solution, 0)
+                .unwrap()
+                .get_i64()
+                .unwrap()
+        })
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
         assert_eq!(values, [1, 2, 3]);
-        assert!(args.get(0).is_variable());
-        frame.close();
+        assert!(args.get(0).unwrap().is_variable());
     });
 }
 
 #[test]
 fn solution_iterator_rolls_back_on_drop_and_can_cut_explicitly() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
 
         let rolled_back = frame.terms(2).unwrap();
-        rolled_back.get(1).put_term_from_text("[a, b]").unwrap();
+        rolled_back
+            .get(1)
+            .unwrap()
+            .put_term_from_text("[a, b]")
+            .unwrap();
         let mut solutions = Query::solutions(
-            &frame,
+            frame,
             &member,
             &rolled_back,
             QueryOptions::default(),
@@ -454,29 +428,27 @@ fn solution_iterator_rolls_back_on_drop_and_can_cut_explicitly() {
         .unwrap();
         assert!(solutions.next().unwrap().is_ok());
         drop(solutions);
-        assert!(rolled_back.get(0).is_variable());
+        assert!(rolled_back.get(0).unwrap().is_variable());
 
         let kept = frame.terms(2).unwrap();
-        kept.get(1).put_term_from_text("[a, b]").unwrap();
+        kept.get(1).unwrap().put_term_from_text("[a, b]").unwrap();
         let mut solutions =
-            Query::solutions(&frame, &member, &kept, QueryOptions::default(), |_| ()).unwrap();
+            Query::solutions(frame, &member, &kept, QueryOptions::default(), |_| ()).unwrap();
         assert!(solutions.next().unwrap().is_ok());
         solutions.cut().unwrap();
-        assert_eq!(kept.get(0).get_text().unwrap(), "a");
-        frame.close();
+        assert_eq!(kept.get(0).unwrap().get_text().unwrap(), "a");
     });
 }
 
 #[test]
 fn try_solution_iterator_rolls_back_mapper_errors() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(1).put_term_from_text("[a, b]").unwrap();
+        args.get(1).unwrap().put_term_from_text("[a, b]").unwrap();
 
         let mut solutions =
-            Query::try_solutions(&frame, &member, &args, QueryOptions::default(), |_| {
+            Query::try_solutions(frame, &member, &args, QueryOptions::default(), |_| {
                 Err::<(), _>("reject solution")
             })
             .unwrap();
@@ -486,90 +458,89 @@ fn try_solution_iterator_rolls_back_mapper_errors() {
             splint::ScopedCallError::Body("reject solution")
         ));
         assert!(solutions.next().is_none());
-        assert!(args.get(0).is_variable());
+        assert!(args.get(0).unwrap().is_variable());
         drop(solutions);
-        frame.close();
     });
 }
 
 #[test]
 fn solution_iterator_rolls_back_a_mapper_panic_even_if_caught() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(1).put_term_from_text("[a, b]").unwrap();
+        args.get(1).unwrap().put_term_from_text("[a, b]").unwrap();
 
         let mut solutions =
-            Query::solutions(&frame, &member, &args, QueryOptions::default(), |_| {
+            Query::solutions(frame, &member, &args, QueryOptions::default(), |_| {
                 panic!("mapper panic")
             })
             .unwrap();
         let result = catch_unwind(AssertUnwindSafe(|| solutions.next()));
         assert!(result.is_err());
         assert!(solutions.next().is_none());
-        assert!(args.get(0).is_variable());
+        assert!(args.get(0).unwrap().is_variable());
         drop(solutions);
-        frame.close();
     });
 }
 
 #[test]
 fn query_is_a_scope_for_solution_inspection() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
+    with_frame(|frame| {
+        let member = Predicate::from_name(frame, "member", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
-        args.get(1).put_term_from_text("[f(1), f(2)]").unwrap();
+        args.get(1)
+            .unwrap()
+            .put_term_from_text("[f(1), f(2)]")
+            .unwrap();
 
-        let mut query = Query::open(&frame, &member, &args, QueryOptions::default()).unwrap();
-        let mut seen = Vec::new();
-        while query.next_solution().unwrap() {
+        let seen = Query::solutions(frame, &member, &args, QueryOptions::default(), |solution| {
             // Scratch references for decomposing the solution come from the
             // query itself — the innermost scope while it is open.
-            let arg = args.get(0).get_arg(&query, 0).unwrap();
-            seen.push(arg.get_i64().unwrap());
-        }
+            let arg = args.get(0).unwrap().get_arg(solution, 0).unwrap();
+            arg.get_i64().unwrap()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
         assert_eq!(seen, [1, 2]);
-        query.close().unwrap();
-        frame.close();
     });
 }
 
 #[test]
 fn cut_keeps_bindings_close_discards_them() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+    with_frame(|frame| {
+        let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
 
         let cut_args = frame.terms(2).unwrap();
-        cut_args.get(0).put_i64(4).unwrap();
-        let mut query = Query::open(&frame, &succ, &cut_args, QueryOptions::default()).unwrap();
-        assert!(query.next_solution().unwrap());
-        query.cut().unwrap();
-        assert_eq!(cut_args.get(1).get_i64().unwrap(), 5);
+        cut_args.get(0).unwrap().put_i64(4).unwrap();
+        assert!(
+            Query::once(frame, &succ, &cut_args, QueryOptions::default(), |_| ())
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(cut_args.get(1).unwrap().get_i64().unwrap(), 5);
 
         let close_args = frame.terms(2).unwrap();
-        close_args.get(0).put_i64(4).unwrap();
-        let mut query = Query::open(&frame, &succ, &close_args, QueryOptions::default()).unwrap();
-        assert!(query.next_solution().unwrap());
-        query.close().unwrap();
-        assert!(close_args.get(1).is_variable());
-
-        frame.close();
+        close_args.get(0).unwrap().put_i64(4).unwrap();
+        let mut solutions =
+            Query::solutions(frame, &succ, &close_args, QueryOptions::default(), |_| ()).unwrap();
+        assert!(solutions.next().unwrap().is_ok());
+        solutions.close().unwrap();
+        assert!(close_args.get(1).unwrap().is_variable());
     });
 }
 
 #[test]
 fn thrown_exception_is_captured_and_cleared() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let throw = Predicate::resolve(&frame, "throw", 1, None).unwrap();
+    with_frame(|frame| {
+        let throw = Predicate::from_name(frame, "throw", 1, None).unwrap();
         let args = frame.terms(1).unwrap();
-        args.get(0).put_term_from_text("my_error(42)").unwrap();
+        args.get(0)
+            .unwrap()
+            .put_term_from_text("my_error(42)")
+            .unwrap();
 
-        let mut query = Query::open(&frame, &throw, &args, QueryOptions::default()).unwrap();
-        let error = query.next_solution().unwrap_err();
+        let error = Query::once(frame, &throw, &args, QueryOptions::default(), |_| ()).unwrap_err();
         match &error {
             QueryError::Exception(exception) => {
                 assert!(
@@ -580,48 +551,44 @@ fn thrown_exception_is_captured_and_cleared() {
             }
             other => panic!("expected an exception, got: {other:?}"),
         }
-        query.close().unwrap();
 
         // The exception was cleared: the engine remains usable.
         let t = frame.term().unwrap();
         t.put_i64(1).unwrap();
         assert_eq!(t.get_i64().unwrap(), 1);
-        frame.close();
     });
 }
 
 #[test]
 fn predicate_via_functor_and_module() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let module = Module::by_name(&frame, "user");
-        let functor = Functor::from_name(&frame, "succ", 2).unwrap();
-        let succ = Predicate::new(&frame, &functor, &module).unwrap();
+    with_frame(|frame| {
+        let module = Module::from_name(frame, "user");
+        let functor = Functor::from_name(frame, "succ", 2).unwrap();
+        let succ = Predicate::new(frame, &functor, &module).unwrap();
 
         let args = frame.terms(2).unwrap();
-        args.get(0).put_i64(7).unwrap();
-        let mut query = Query::open(&frame, &succ, &args, QueryOptions::default()).unwrap();
-        assert!(query.next_solution().unwrap());
-        assert_eq!(args.get(1).get_i64().unwrap(), 8);
-        query.close().unwrap();
-        frame.close();
+        args.get(0).unwrap().put_i64(7).unwrap();
+        assert!(
+            Query::once(frame, &succ, &args, QueryOptions::default(), |_| ())
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 8);
     });
 }
 
 #[test]
 fn query_arity_mismatch_is_rejected() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let succ = Predicate::resolve(&frame, "succ", 2, None).unwrap();
+    with_frame(|frame| {
+        let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(1).unwrap();
         assert!(matches!(
-            Query::open(&frame, &succ, &args, QueryOptions::default()),
+            Query::once(frame, &succ, &args, QueryOptions::default(), |_| ()),
             Err(QueryError::ArityMismatch {
                 expected: 2,
                 actual: 1
             })
         ));
-        frame.close();
     });
 }
 
@@ -652,7 +619,7 @@ fn closing_scopes_out_of_order_panics() {
         // borrowing it, which is how an out-of-order close becomes
         // expressible at all.
         let witness = RT.current_engine().unwrap();
-        let inner = Frame::open(&witness).unwrap();
+        let inner = witness.frame().unwrap();
         std::mem::forget(inner);
         let result = catch_unwind(AssertUnwindSafe(|| outer.close()));
         let message = *result.unwrap_err().downcast::<String>().unwrap();
@@ -664,51 +631,22 @@ fn closing_scopes_out_of_order_panics() {
 }
 
 #[test]
-fn advancing_a_query_under_an_open_sibling_scope_panics() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-        let member = Predicate::resolve(&frame, "member", 2, None).unwrap();
-        let args = frame.terms(2).unwrap();
-        args.get(1).put_term_from_text("[1, 2]").unwrap();
-
-        let mut query = Query::open(&frame, &member, &args, QueryOptions::default()).unwrap();
-        // As in `closing_scopes_out_of_order_panics`, a CurrentEngine witness
-        // aliases the query's scope position without borrowing it, so the
-        // borrow checker cannot see that backtracking would invalidate the
-        // frame opened on top of the query.
-        let witness = RT.current_engine().unwrap();
-        let inner = Frame::open(&witness).unwrap();
-        let result = catch_unwind(AssertUnwindSafe(|| query.next_solution()));
-        let message = *result.unwrap_err().downcast::<String>().unwrap();
-        assert!(
-            message.contains("innermost"),
-            "expected the innermost panic, got: {message}"
-        );
-
-        // With the sibling scope gone, the query works again.
-        inner.close();
-        assert!(query.next_solution().unwrap());
-        query.close().unwrap();
-        frame.close();
-    });
-}
-
-#[test]
 fn terms_refuse_to_operate_after_an_engine_switch() {
     with_engine(|ctx| {
         let term = ctx.term().unwrap();
         term.put_i64(11).unwrap();
 
         let mut other = Engine::new(&RT, EngineAttributes::default()).expect("create failed");
-        {
-            let _other_ctx = other.attach_within(ctx).expect("attach failed");
-            let result = catch_unwind(AssertUnwindSafe(|| term.get_i64()));
-            let message = *result.unwrap_err().downcast::<String>().unwrap();
-            assert!(
-                message.contains("current engine"),
-                "expected the generation panic, got: {message}"
-            );
-        }
+        other
+            .with_attached_within(ctx, |_| {
+                let result = catch_unwind(AssertUnwindSafe(|| term.get_i64()));
+                let message = *result.unwrap_err().downcast::<String>().unwrap();
+                assert!(
+                    message.contains("current engine"),
+                    "expected the generation panic, got: {message}"
+                );
+            })
+            .expect("attach failed");
 
         // With the original engine current again, the term works.
         assert_eq!(term.get_i64().unwrap(), 11);
@@ -716,11 +654,11 @@ fn terms_refuse_to_operate_after_an_engine_switch() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn term_list_indexing_is_bounds_checked() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+fn term_list_get_returns_none_out_of_bounds() {
+    with_frame(|frame| {
         let args = frame.terms(2).unwrap();
-        let _ = args.get(2);
+        assert!(args.get(0).is_some());
+        assert!(args.get(1).is_some());
+        assert!(args.get(2).is_none());
     });
 }

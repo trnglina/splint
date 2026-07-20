@@ -8,15 +8,16 @@ static RT: LazyLock<Runtime> = LazyLock::new(|| {
 
 fn with_engine<R>(body: impl FnOnce(&splint::AttachedEngine<'_>) -> R) -> R {
     let mut engine = Engine::new(&RT, EngineAttributes::default()).expect("engine create failed");
-    let ctx = engine.attach().expect("attach failed");
-    body(&ctx)
+    engine.with_attached(body).expect("attach failed")
+}
+
+fn with_frame<R>(body: impl for<'a> FnOnce(&'a splint::Frame<'a>) -> R) -> R {
+    with_engine(|ctx| ctx.with_frame(body).unwrap())
 }
 
 #[test]
 fn list_shape_classifies_proper_and_empty() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-
+    with_frame(|frame| {
         let proper = frame.term().unwrap();
         proper.put_term_from_text("[a, b, c]").unwrap();
         assert_eq!(proper.list_shape(), ListShape::Proper { len: 3 });
@@ -29,9 +30,7 @@ fn list_shape_classifies_proper_and_empty() {
 
 #[test]
 fn list_shape_classifies_partial_improper_cyclic_and_non_list() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-
+    with_frame(|frame| {
         // Partial: [a | _], tail left unbound.
         let a = frame.term().unwrap();
         a.put_atom_text("a").unwrap();
@@ -63,12 +62,11 @@ fn list_shape_classifies_partial_improper_cyclic_and_non_list() {
 
 #[test]
 fn collect_list_gathers_proper_elements() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
+    with_frame(|frame| {
         let list = frame.term().unwrap();
         list.put_term_from_text("[1, 2, 3]").unwrap();
 
-        let elements = list.collect_list(&frame).unwrap();
+        let elements = list.collect_list(frame).unwrap();
         let values: Vec<i64> = elements
             .iter()
             .map(|term| term.get_i64().unwrap())
@@ -77,15 +75,13 @@ fn collect_list_gathers_proper_elements() {
 
         let empty = frame.term().unwrap();
         empty.put_nil().unwrap();
-        assert!(empty.collect_list(&frame).unwrap().is_empty());
+        assert!(empty.collect_list(frame).unwrap().is_empty());
     });
 }
 
 #[test]
 fn collect_list_rejects_non_proper_lists_without_looping() {
-    with_engine(|ctx| {
-        let frame = ctx.frame().unwrap();
-
+    with_frame(|frame| {
         let a = frame.term().unwrap();
         a.put_atom_text("a").unwrap();
 
@@ -95,7 +91,7 @@ fn collect_list_rejects_non_proper_lists_without_looping() {
         cyclic.cons_list(a, self_tail).unwrap();
         assert!(self_tail.unify(cyclic).unwrap());
         assert!(matches!(
-            cyclic.collect_list(&frame),
+            cyclic.collect_list(frame),
             Err(TermError::NotAProperList(ListShape::Cyclic))
         ));
 
@@ -105,7 +101,7 @@ fn collect_list_rejects_non_proper_lists_without_looping() {
         let improper = frame.term().unwrap();
         improper.cons_list(a, b).unwrap();
         assert!(matches!(
-            improper.collect_list(&frame),
+            improper.collect_list(frame),
             Err(TermError::NotAProperList(ListShape::Improper))
         ));
     });

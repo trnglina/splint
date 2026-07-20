@@ -51,11 +51,11 @@
 //!   borrows the [`Runtime`]: guard ⊆ engine ⊆ runtime, enforced by the
 //!   borrow checker.
 //! - **E5** — A guard's drop re-attaches the previously attached engine, so
-//!   that engine must outlive the guard. [`Engine::attach`] therefore
+//!   that engine must outlive the guard. The internal plain attach path
 //!   refuses a thread that already has a crate-managed engine attached: its
 //!   `previous` is then null or an unmanaged engine (e.g. the main engine),
 //!   pinned for the [`Runtime`]'s lifetime. Nesting goes through
-//!   [`Engine::attach_within`], whose guard borrows the outer guard: the
+//!   [`Engine::with_attached_within`], whose guard borrows the outer guard: the
 //!   outer engine stays exclusively borrowed — alive and unattachable
 //!   elsewhere — until the nested guard drops, and drops are LIFO by
 //!   construction. Dynamic backstops cover what borrows cannot: a guard
@@ -105,9 +105,10 @@
 //!   handles `PL_rewind_foreign_frame` would silently invalidate; an
 //!   innermost check (C2) covers scopes that alias the frame's position via
 //!   a [`CurrentEngine`] witness without borrowing it.
-//! - **F5** — All term/frame/query/handle types are `!Send + !Sync`: they
-//!   describe state of the engine currently attached to the calling thread
-//!   (same reasoning as E3).
+//! - **F5** — [`Term`], [`TermList`], [`Frame`], and [`Query`] are
+//!   `!Send + !Sync`: they describe state of the engine currently attached
+//!   to the calling thread (same reasoning as E3). Process-global handles are
+//!   covered separately by A2.
 //! - **F6** — Dropping a [`Frame`] *discards* it (undoes bindings), which is
 //!   well-defined regardless of what happened inside, including a panic;
 //!   keeping bindings requires the affirmative [`Frame::close`] call.
@@ -119,17 +120,15 @@
 //!
 //! - **Q1** — A [`Query`] follows the same borrow (F1), LIFO (C2), and
 //!   generation (C3) discipline as a frame, sharing the same activation
-//!   record. Ending it is explicit — [`Query::cut`] keeps the current
-//!   solution's bindings, [`Query::close`] discards them — and exhaustion
-//!   (`Ok(false)`) still requires ending it. Exceptions are captured and
-//!   cleared eagerly as rendered text ([`PrologException`]), never carried
-//!   as raw engine state. [`Query::next_solution`] takes `&mut self`
-//!   because backtracking destroys term references and frames created since
-//!   the previous solution: the exclusive borrow forces those values, which
-//!   borrow the query shared, to be dead before it runs; an innermost check
-//!   (C2) covers scopes that alias the query's position via a
-//!   [`CurrentEngine`] witness without borrowing it, exactly as F4 does for
-//!   [`Frame::rewind`].
+//!   record. Its private state machine explicitly cuts to keep bindings or
+//!   closes to discard them. Exceptions are captured and cleared eagerly as
+//!   rendered text ([`PrologException`]), never carried as raw engine state.
+//!   Advancing requires exclusive access because backtracking destroys term
+//!   references and frames created since the previous solution; the
+//!   exclusive borrow forces values borrowing the query to be dead first.
+//!   An innermost check (C2) covers scopes that alias the query's position
+//!   via a [`CurrentEngine`] witness without borrowing it, exactly as F4 does
+//!   for [`Frame::rewind`].
 //! - **Q2** — [`Query::once`] and [`Query::solutions`] lend each current
 //!   solution through a higher-ranked callback, so solution-local references
 //!   cannot escape across a cut, close, or the next backtracking step.
@@ -146,10 +145,13 @@
 //!   (equal text ⇒ equal handle), so `Eq`/`Hash` compare the raw handle,
 //!   which is exact value equality regardless of the borrowed context.
 //! - **A2** — [`Atom`]/[`Functor`]/[`Module`]/[`Predicate`] are
-//!   engine-independent global handles (no generation check); their context
-//!   borrow pins the [`Runtime`] alive, which is all their use and drop
-//!   require. Bounding them by a context borrow is conservative; relaxing
-//!   to a runtime-lifetime bound is future work.
+//!   engine-independent, `Send + Sync` process-global handles with no
+//!   generation or Rust lifetime bound. SWI-Prolog keeps functor, module, and
+//!   predicate handles valid for the whole initialized session; an [`Atom`]
+//!   owns a registration that keeps its atom live. R1 guarantees that session
+//!   lasts until process exit. Constructors still accept an [`FliContext`] as
+//!   proof that initialization has occurred and, for fallible constructors,
+//!   to provide a current engine from which pending exceptions can be taken.
 //! - **A3** — `PL_new_module` find-or-creates and has no failure sentinel.
 //!   `PL_new_functor_sz`, `PL_pred`, and `PL_predicate` can each fail (e.g. a
 //!   `program_space` resource error), so their zero/null returns are checked;
@@ -228,7 +230,7 @@ pub use engine::{
 };
 pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
-pub use query::{Query, QueryError, QueryOptions, Solutions};
+pub use query::{Query, QueryError, QueryOptions, Solutions, TrySolutions};
 pub use record::{Record, RecordError};
 pub use runtime::{InitError, Runtime};
 #[cfg(feature = "serde")]

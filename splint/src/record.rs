@@ -90,13 +90,6 @@ pub(crate) fn recall_raw_into(raw: record_t, term: Term<'_>) -> Result<(), Recor
 }
 
 impl Record {
-    /// Records `term`.
-    ///
-    /// Equivalent to [`Term::record`].
-    pub fn of(term: Term<'_>) -> Result<Record, RecordError> {
-        term.record()
-    }
-
     /// Wraps a raw record handle. The caller transfers ownership of exactly
     /// one erase obligation to the returned value.
     pub(crate) fn from_raw(raw: record_t) -> Record {
@@ -135,11 +128,7 @@ impl Record {
         recall_raw_into(self.raw, term)
     }
 
-    /// The raw record handle. Exposed for tests and escape hatches; erasing it
-    /// outside this type's control voids the safety guarantees documented on
-    /// [`Record`].
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> record_t {
+    pub(crate) fn as_raw(&self) -> record_t {
         self.raw
     }
 }

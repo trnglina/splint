@@ -9,16 +9,11 @@ pub enum ScopedCallError<Operation, Body> {
     /// Opening, advancing, or finalizing the managed resource failed.
     #[error("managed operation failed: {0}")]
     Operation(Operation),
-    /// The user closure failed. The managed resource was rolled back.
+    /// The user closure failed and the scope was ended according to the
+    /// helper's documented failure semantics.
     #[error("scoped body failed: {0}")]
     Body(Body),
-    /// An operation failed and rolling the resource back also failed.
-    #[error("managed operation failed ({operation}); cleanup also failed ({cleanup})")]
-    OperationAndCleanup {
-        operation: Operation,
-        cleanup: Operation,
-    },
-    /// The user closure failed and rolling the resource back also failed.
+    /// The user closure failed and ending the scope also failed.
     #[error("scoped body failed ({body}); cleanup also failed ({cleanup})")]
     BodyAndCleanup { body: Body, cleanup: Operation },
 }

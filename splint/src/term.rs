@@ -42,6 +42,10 @@ pub enum TermError {
     /// A dict was given a different number of keys than values.
     #[error("dict with {keys} key(s) cannot be built from {values} value(s)")]
     DictLengthMismatch { keys: usize, values: usize },
+    /// An internal operation needed to complete the requested term operation
+    /// failed without reporting a Prolog exception.
+    #[error("term operation failed while {operation}")]
+    OperationFailed { operation: &'static str },
     /// A list operation required a proper, acyclic list ending in `[]`, but
     /// the term's spine was something else (partial, improper, or cyclic).
     #[error("term is not a proper list ({0:?})")]
@@ -162,8 +166,11 @@ pub trait FliContext: Sealed {
         })
     }
 
-    /// Opens a nested foreign frame borrowing `self`; sugar for
-    /// [`Frame::open`].
+    /// Opens a nested foreign frame borrowing `self`.
+    ///
+    /// This manual form exists for [`Frame::rewind`]. Prefer
+    /// [`FliContext::with_frame`] or [`FliContext::try_with_frame`] when the
+    /// frame does not need to be rewound.
     fn frame(&self) -> Result<Frame<'_>, FrameError> {
         Frame::open(self)
     }
@@ -272,7 +279,7 @@ impl<'c> Frame<'c> {
     ///
     /// Panics if `ctx` is not the innermost open scope of the thread's
     /// current engine (C2/C3).
-    pub fn open<C: FliContext + ?Sized>(ctx: &'c C) -> Result<Frame<'c>, FrameError> {
+    fn open<C: FliContext + ?Sized>(ctx: &'c C) -> Result<Frame<'c>, FrameError> {
         let activation = ctx.activation();
         let depth = scope::open_scope(activation, "frame");
         // SAFETY: `ctx` witnesses that an engine is current on this thread
@@ -316,7 +323,7 @@ impl<'c> Frame<'c> {
     /// # Panics
     ///
     /// Panics if the frame is not the innermost open scope (C2).
-    pub fn discard(self) {
+    fn discard(self) {
         scope::close_scope(self.gen, self.depth, "frame");
         // SAFETY: as for `close`.
         unsafe { swipl_sys::PL_discard_foreign_frame(self.fid) };
@@ -343,14 +350,6 @@ impl<'c> Frame<'c> {
         // (assert above), and `&mut self` proves no term borrowed from this
         // frame survives the rewind (F4).
         unsafe { swipl_sys::PL_rewind_foreign_frame(self.fid) };
-    }
-
-    /// The raw frame id. Exposed for tests and escape hatches; closing or
-    /// discarding it outside this type's control voids the safety guarantees
-    /// documented on [`Frame`].
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> PL_fid_t {
-        self.fid
     }
 }
 
@@ -446,32 +445,26 @@ impl<'f> TermList<'f> {
         self.len == 0
     }
 
-    /// The `index`-th term of the block (0-based).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index >= len`.
-    pub fn get(&self, index: usize) -> Term<'f> {
-        assert!(
-            index < self.len,
-            "splint: term index {index} out of bounds for a list of {} references",
-            self.len,
-        );
-        Term {
+    /// The `index`-th term of the block (0-based), or `None` if it is outside
+    /// the block.
+    pub fn get(&self, index: usize) -> Option<Term<'f>> {
+        (index < self.len).then(|| Term {
             raw: self.first + index,
             gen: self.gen,
             _scope: PhantomData,
             _not_send_sync: PhantomData,
-        }
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Term<'f>> + '_ {
-        (0..self.len).map(|index| self.get(index))
+        (0..self.len).map(|index| {
+            self.get(index)
+                .expect("splint: an index generated from TermList::len must be valid")
+        })
     }
 
-    /// The raw base term reference. Exposed for tests and escape hatches.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> term_t {
+    /// The raw base term reference for crate-internal FFI calls.
+    pub(crate) fn as_raw(&self) -> term_t {
         self.first
     }
 
@@ -493,7 +486,7 @@ impl<'f> Term<'f> {
     }
 
     /// Makes the term reference the given atom (`PL_put_atom`).
-    pub fn put_atom(&self, atom: &Atom<'_>) -> Result<(), TermError> {
+    pub fn put_atom(&self, atom: &Atom) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above; the atom handle is valid while `atom`
         // holds its registration (A1).
@@ -602,11 +595,7 @@ impl<'f> Term<'f> {
 
     /// Builds the compound `functor(args...)` in this reference
     /// (`PL_cons_functor_v`). `args` must have exactly the functor's arity.
-    pub fn cons_functor(
-        &self,
-        functor: &Functor<'_>,
-        args: &TermList<'_>,
-    ) -> Result<(), TermError> {
+    pub fn cons_functor(&self, functor: &Functor, args: &TermList<'_>) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
         scope::assert_gen(args.gen(), "term");
         if args.len() != functor.arity() {
@@ -687,7 +676,7 @@ impl<'f> Term<'f> {
     }
 
     /// Reads the term as an atom handle (`PL_get_atom`).
-    pub fn get_atom(&self) -> Result<Atom<'f>, TermError> {
+    pub fn get_atom(&self) -> Result<Atom, TermError> {
         scope::assert_gen(self.gen, "term");
         let mut raw: atom_t = 0;
         // SAFETY: as for `get_i64`.
@@ -736,7 +725,7 @@ impl<'f> Term<'f> {
 
     /// Reads a compound term's name and arity
     /// (`PL_get_compound_name_arity_sz`).
-    pub fn name_arity(&self) -> Result<(Atom<'f>, usize), TermError> {
+    pub fn name_arity(&self) -> Result<(Atom, usize), TermError> {
         scope::assert_gen(self.gen, "term");
         let mut name: atom_t = 0;
         let mut arity: usize = 0;
@@ -750,13 +739,10 @@ impl<'f> Term<'f> {
     }
 
     /// Reads the functor of a compound term — or of an atom, as its arity-0
-    /// functor — into a [`Functor`] handle branded to `ctx` (`PL_get_functor`).
+    /// functor — into a reusable global [`Functor`] handle (`PL_get_functor`).
     /// Unlike [`Term::name_arity`], the result is a reusable handle (e.g. for
     /// [`Term::cons_functor`] or [`Predicate::new`](crate::Predicate::new)).
-    pub fn get_functor<'a, C: FliContext + ?Sized>(
-        &self,
-        ctx: &'a C,
-    ) -> Result<Functor<'a>, TermError> {
+    pub fn get_functor(&self) -> Result<Functor, TermError> {
         scope::assert_gen(self.gen, "term");
         let mut raw: functor_t = 0;
         // SAFETY: C3 assert above; the out-pointer is a live stack local.
@@ -764,9 +750,9 @@ impl<'f> Term<'f> {
             unsafe { swipl_sys::PL_get_functor(self.raw, &mut raw) },
             "a compound term or atom",
         )?;
-        // SAFETY: `raw` is a live functor handle just read from the term;
-        // `ctx` pins the runtime for the returned handle's lifetime (A2).
-        Ok(unsafe { Functor::from_raw(ctx, raw) })
+        // SAFETY: `raw` is a live process-global functor handle just read
+        // from the term (A2).
+        Ok(unsafe { Functor::from_raw(raw) })
     }
 
     /// Reads the `index`-th argument (0-based) of a compound term into a
@@ -962,11 +948,8 @@ impl<'f> Term<'f> {
         Ok(Record::from_raw(raw))
     }
 
-    /// The raw term reference. Exposed for tests and escape hatches; using
-    /// it after this term's scope ends voids the safety guarantees
-    /// documented on [`Term`].
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> term_t {
+    /// The raw term reference for crate-internal FFI calls.
+    pub(crate) fn as_raw(&self) -> term_t {
         self.raw
     }
 

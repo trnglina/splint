@@ -12,13 +12,14 @@ use crate::scope::{self, Activation};
 use crate::term::{FliContext, Sealed, TermList};
 use crate::ScopedCallError;
 
-/// User-facing options for [`Query::open`], mirroring the exposed subset of
-/// the `PL_Q_*` flag word. `PL_Q_EXT_STATUS` and `PL_Q_CATCH_EXCEPTION` are
-/// always set internally: extended status codes drive the
-/// [`Query::next_solution`] state machine, and caught exceptions are how
-/// errors surface as [`QueryError::Exception`] instead of propagating into
-/// an enclosing (possibly nonexistent) query.
+/// User-facing options for the [`Query`] helper methods, mirroring the
+/// exposed subset of the `PL_Q_*` flag word. `PL_Q_EXT_STATUS` and
+/// `PL_Q_CATCH_EXCEPTION` are always set internally so queries can enumerate
+/// solutions and surface caught exceptions as [`QueryError::Exception`].
+/// Create this non-exhaustive options value with [`QueryOptions::default`]
+/// and then set the desired public fields.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct QueryOptions {
     /// Run the goal with the debugger disabled (`PL_Q_NODEBUG`).
     pub nodebug: bool,
@@ -48,17 +49,21 @@ pub enum QueryError {
     Exception(#[source] PrologException),
     #[error("PL_next_solution returned an unrecognized status code {0}")]
     Unknown(c_int),
+    /// Advancing a query failed, and closing it then failed independently.
+    #[error("query operation failed ({operation}); cleanup also failed ({cleanup})")]
+    OperationAndCleanup {
+        operation: Box<QueryError>,
+        cleanup: Box<QueryError>,
+    },
 }
 
-/// An open query (`PL_open_query`): an active call of a [`Predicate`] whose
-/// solutions are enumerated with [`Query::next_solution`].
+/// A callback-scoped view of the current solution of a Prolog query.
 ///
-/// The argument block passed to [`Query::open`] *is* the query's argument
-/// vector — SWI-Prolog does not copy it — so solution bindings are read back
-/// through the same [`TermList`]. Ending the query is explicit:
-/// [`Query::cut`] keeps the current solution's bindings, [`Query::close`]
-/// discards them; dropping an open query closes it. Queries participate in
-/// the same LIFO scope discipline as frames (C2).
+/// Values of this type are supplied to the callbacks accepted by
+/// [`Query::once`], [`Query::try_once`], [`Query::solutions`], and
+/// [`Query::try_solutions`]. The query is also an [`FliContext`], allowing
+/// solution-local scratch terms to be allocated without letting them escape
+/// into the next solution.
 pub struct Query<'c> {
     /// Invariant: a live query id owned by this value, ended exactly once by
     /// `cut`/`close`/`Drop`.
@@ -83,9 +88,9 @@ impl<'c> Query<'c> {
     ///
     /// Panics if `ctx` is not the innermost open scope of the thread's
     /// current engine (C2/C3).
-    pub fn open<C: FliContext + ?Sized>(
+    fn open<C: FliContext + ?Sized>(
         ctx: &'c C,
-        predicate: &Predicate<'_>,
+        predicate: &Predicate,
         args: &TermList<'_>,
         options: QueryOptions,
     ) -> Result<Query<'c>, QueryError> {
@@ -134,27 +139,26 @@ impl<'c> Query<'c> {
     /// closes the query through its destructor.
     pub fn once<C, R>(
         ctx: &'c C,
-        predicate: &Predicate<'_>,
+        predicate: &Predicate,
         args: &TermList<'_>,
         options: QueryOptions,
         body: impl for<'a> FnOnce(&'a Query<'c>) -> R,
-    ) -> Result<Option<R>, ScopedCallError<QueryError, Infallible>>
+    ) -> Result<Option<R>, QueryError>
     where
         C: FliContext + ?Sized,
     {
-        let mut query =
-            Query::open(ctx, predicate, args, options).map_err(ScopedCallError::Operation)?;
+        let mut query = Query::open(ctx, predicate, args, options)?;
         match query.next_solution() {
             Ok(true) => {
                 let result = body(&query);
-                query.cut().map_err(ScopedCallError::Operation)?;
+                query.cut()?;
                 Ok(Some(result))
             }
             Ok(false) => {
-                query.close().map_err(ScopedCallError::Operation)?;
+                query.close()?;
                 Ok(None)
             }
-            Err(operation) => Err(close_after_operation(query, operation)),
+            Err(operation) => Err(cleanup_after_operation(query, operation)),
         }
     }
 
@@ -164,7 +168,7 @@ impl<'c> Query<'c> {
     /// closes it and rolls its bindings back.
     pub fn try_once<C, R, E>(
         ctx: &'c C,
-        predicate: &Predicate<'_>,
+        predicate: &Predicate,
         args: &TermList<'_>,
         options: QueryOptions,
         body: impl for<'a> FnOnce(&'a Query<'c>) -> Result<R, E>,
@@ -186,7 +190,9 @@ impl<'c> Query<'c> {
                 query.close().map_err(ScopedCallError::Operation)?;
                 Ok(None)
             }
-            Err(operation) => Err(close_after_operation(query, operation)),
+            Err(operation) => Err(ScopedCallError::Operation(cleanup_after_operation(
+                query, operation,
+            ))),
         }
     }
 
@@ -203,7 +209,7 @@ impl<'c> Query<'c> {
     ///
     /// fn escaping_mapper<'c, C: FliContext + ?Sized>(
     ///     ctx: &'c C,
-    ///     predicate: &Predicate<'_>,
+    ///     predicate: &Predicate,
     ///     args: &TermList<'_>,
     /// ) {
     ///     let _ = Query::solutions(ctx, predicate, args, QueryOptions::default(), |query| {
@@ -213,19 +219,21 @@ impl<'c> Query<'c> {
     /// ```
     pub fn solutions<C, R, F>(
         ctx: &'c C,
-        predicate: &Predicate<'_>,
+        predicate: &Predicate,
         args: &TermList<'_>,
         options: QueryOptions,
         mut mapper: F,
-    ) -> Result<Solutions<'c, R, Infallible>, QueryError>
+    ) -> Result<Solutions<'c, R>, QueryError>
     where
         C: FliContext + ?Sized,
         F: for<'a> FnMut(&'a Query<'c>) -> R + 'c,
     {
         let query = Query::open(ctx, predicate, args, options)?;
         Ok(Solutions {
-            query: Some(query),
-            mapper: Box::new(move |query| Ok(mapper(query))),
+            inner: SolutionIter {
+                query: Some(query),
+                mapper: Box::new(move |query| Ok(mapper(query))),
+            },
         })
     }
 
@@ -236,19 +244,21 @@ impl<'c> Query<'c> {
     /// [`ScopedCallError::BodyAndCleanup`].
     pub fn try_solutions<C, R, E, F>(
         ctx: &'c C,
-        predicate: &Predicate<'_>,
+        predicate: &Predicate,
         args: &TermList<'_>,
         options: QueryOptions,
         mapper: F,
-    ) -> Result<Solutions<'c, R, E>, QueryError>
+    ) -> Result<TrySolutions<'c, R, E>, QueryError>
     where
         C: FliContext + ?Sized,
         F: for<'a> FnMut(&'a Query<'c>) -> Result<R, E> + 'c,
     {
         let query = Query::open(ctx, predicate, args, options)?;
-        Ok(Solutions {
-            query: Some(query),
-            mapper: Box::new(mapper),
+        Ok(TrySolutions {
+            inner: SolutionIter {
+                query: Some(query),
+                mapper: Box::new(mapper),
+            },
         })
     }
 
@@ -266,7 +276,7 @@ impl<'c> Query<'c> {
     /// `CurrentEngine` witness can alias this query's position without
     /// borrowing it, and backtracking across it would invalidate its
     /// frame id.
-    pub fn next_solution(&mut self) -> Result<bool, QueryError> {
+    fn next_solution(&mut self) -> Result<bool, QueryError> {
         if self.exhausted {
             return Ok(false);
         }
@@ -306,7 +316,7 @@ impl<'c> Query<'c> {
     /// # Panics
     ///
     /// Panics if the query is not the innermost open scope (C2).
-    pub fn cut(self) -> Result<(), QueryError> {
+    fn cut(self) -> Result<(), QueryError> {
         scope::close_scope(self.gen, self.depth, "query");
         // SAFETY: `self.qid` is live and this query is the innermost scope
         // (close_scope assert above, C2); consuming `self` (with the forget
@@ -321,7 +331,7 @@ impl<'c> Query<'c> {
     /// # Panics
     ///
     /// Panics if the query is not the innermost open scope (C2).
-    pub fn close(self) -> Result<(), QueryError> {
+    fn close(self) -> Result<(), QueryError> {
         scope::close_scope(self.gen, self.depth, "query");
         // SAFETY: as for `cut`.
         let rc = unsafe { swipl_sys::PL_close_query(self.qid) };
@@ -352,46 +362,24 @@ impl<'c> Query<'c> {
             None => Ok(()),
         }
     }
-
-    /// The raw query id. Exposed for tests and escape hatches; ending the
-    /// query outside this type's control voids the safety guarantees
-    /// documented on [`Query`].
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> qid_t {
-        self.qid
-    }
 }
 
 type SolutionMapper<'c, R, E> = dyn for<'a> FnMut(&'a Query<'c>) -> Result<R, E> + 'c;
 
-/// A mapped iterator over the solutions of a [`Query`].
-///
-/// The query stays open between yielded items. Calling `next` backtracks from
-/// the previous solution before finding another one. Exhaustion and drop
-/// close the query and discard bindings; [`Solutions::cut`] is the explicit
-/// early-success path that keeps the current solution.
-pub struct Solutions<'c, R, E = Infallible> {
+struct SolutionIter<'c, R, E> {
     query: Option<Query<'c>>,
     mapper: Box<SolutionMapper<'c, R, E>>,
 }
 
-impl<R, E> Solutions<'_, R, E> {
-    /// Ends iteration, keeping the current solution's bindings.
-    ///
-    /// Calling this before a solution has been yielded simply ends the query.
-    /// If iteration has already finished, it is a no-op.
-    pub fn cut(mut self) -> Result<(), QueryError> {
+impl<R, E> SolutionIter<'_, R, E> {
+    fn cut(mut self) -> Result<(), QueryError> {
         match self.query.take() {
             Some(query) => query.cut(),
             None => Ok(()),
         }
     }
 
-    /// Ends iteration early and discards the query's bindings.
-    ///
-    /// Unlike dropping the iterator, this reports an error raised while
-    /// closing the query.
-    pub fn close(mut self) -> Result<(), QueryError> {
+    fn close(mut self) -> Result<(), QueryError> {
         match self.query.take() {
             Some(query) => query.close(),
             None => Ok(()),
@@ -403,7 +391,7 @@ impl<R, E> Solutions<'_, R, E> {
             .query
             .take()
             .expect("splint: solution iterator lost its open query");
-        close_after_operation(query, operation)
+        ScopedCallError::Operation(cleanup_after_operation(query, operation))
     }
 
     fn body_error(&mut self, body: E) -> ScopedCallError<QueryError, E> {
@@ -415,7 +403,7 @@ impl<R, E> Solutions<'_, R, E> {
     }
 }
 
-impl<'c, R, E> Iterator for Solutions<'c, R, E> {
+impl<'c, R, E> Iterator for SolutionIter<'c, R, E> {
     type Item = Result<R, ScopedCallError<QueryError, E>>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -459,13 +447,85 @@ impl<'c, R, E> Iterator for Solutions<'c, R, E> {
     }
 }
 
-fn close_after_operation<E>(
-    query: Query<'_>,
-    operation: QueryError,
-) -> ScopedCallError<QueryError, E> {
+/// A mapped iterator over the solutions of an infallible [`Query`] callback.
+///
+/// The query stays open between yielded items. Calling `next` backtracks from
+/// the previous solution before finding another one. Exhaustion and drop
+/// close the query and discard bindings; [`Solutions::cut`] is the explicit
+/// early-success path that keeps the current solution.
+pub struct Solutions<'c, R> {
+    inner: SolutionIter<'c, R, Infallible>,
+}
+
+impl<R> Solutions<'_, R> {
+    /// Ends iteration, keeping the current solution's bindings.
+    ///
+    /// Calling this before a solution has been yielded simply ends the query.
+    /// If iteration has already finished, it is a no-op.
+    pub fn cut(self) -> Result<(), QueryError> {
+        self.inner.cut()
+    }
+
+    /// Ends iteration early and discards the query's bindings.
+    ///
+    /// Unlike dropping the iterator, this reports an error raised while
+    /// closing the query.
+    pub fn close(self) -> Result<(), QueryError> {
+        self.inner.close()
+    }
+}
+
+impl<'c, R> Iterator for Solutions<'c, R> {
+    type Item = Result<R, QueryError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|result| {
+            result.map_err(|error| match error {
+                ScopedCallError::Operation(error) => error,
+                ScopedCallError::Body(body) | ScopedCallError::BodyAndCleanup { body, .. } => {
+                    match body {}
+                }
+            })
+        })
+    }
+}
+
+/// A mapped iterator over the solutions of a fallible [`Query`] callback.
+///
+/// It has the same query-lifetime behavior as [`Solutions`], while preserving
+/// mapper failures in [`ScopedCallError`].
+pub struct TrySolutions<'c, R, E> {
+    inner: SolutionIter<'c, R, E>,
+}
+
+impl<R, E> TrySolutions<'_, R, E> {
+    /// Ends iteration, keeping the current solution's bindings.
+    pub fn cut(self) -> Result<(), QueryError> {
+        self.inner.cut()
+    }
+
+    /// Ends iteration early and discards the query's bindings, reporting an
+    /// error raised while closing it.
+    pub fn close(self) -> Result<(), QueryError> {
+        self.inner.close()
+    }
+}
+
+impl<'c, R, E> Iterator for TrySolutions<'c, R, E> {
+    type Item = Result<R, ScopedCallError<QueryError, E>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+fn cleanup_after_operation(query: Query<'_>, operation: QueryError) -> QueryError {
     match query.close() {
-        Ok(()) => ScopedCallError::Operation(operation),
-        Err(cleanup) => ScopedCallError::OperationAndCleanup { operation, cleanup },
+        Ok(()) => operation,
+        Err(cleanup) => QueryError::OperationAndCleanup {
+            operation: Box::new(operation),
+            cleanup: Box::new(cleanup),
+        },
     }
 }
 
@@ -479,11 +539,11 @@ fn close_after_body<E>(query: Query<'_>, body: E) -> ScopedCallError<QueryError,
 /// An open query is a scope: scratch term references for inspecting the
 /// current solution are allocated from it (`query.term()`, `query.frame()`).
 ///
-/// This is sound because [`Query::next_solution`] takes `&mut self`:
+/// This is sound because advancing the query requires exclusive access:
 /// backtracking to the next solution destroys term references (and frames)
 /// created since the previous one, and the exclusive borrow forces all such
 /// values — which borrow the query shared — to be dead before it runs (F1).
-/// An innermost check in `next_solution` (C2) covers scopes that alias the
+/// An innermost check while advancing (C2) covers scopes that alias the
 /// query's position via a `CurrentEngine` witness without borrowing it.
 impl Sealed for Query<'_> {
     fn activation(&self) -> Activation {

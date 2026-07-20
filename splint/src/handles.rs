@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -31,47 +30,36 @@ pub enum HandleError {
 /// A handle to a Prolog atom, holding one reference on the atom's reference
 /// count.
 ///
-/// Atoms are engine-independent global values; the context borrow only
-/// pins the runtime alive (A2). Every construction path registers the
-/// handle unconditionally and `Drop` unregisters it, so the count is
-/// self-contained regardless of how the raw atom was obtained (A1).
-pub struct Atom<'c> {
+/// Atoms are engine-independent global values. Every construction path
+/// registers the handle unconditionally and `Drop` unregisters it, so the
+/// count is self-contained regardless of how the raw atom was obtained (A1).
+pub struct Atom {
     raw: atom_t,
-    _ctx: PhantomData<&'c ()>,
-    _not_send_sync: PhantomData<*mut ()>,
 }
 
-impl<'c> Atom<'c> {
+impl Atom {
     /// Creates (or finds) the atom with the given text
     /// (`PL_new_atom_nchars`).
-    pub fn new<C: FliContext + ?Sized>(_ctx: &'c C, text: &str) -> Atom<'c> {
+    pub fn new<C: FliContext + ?Sized>(_ctx: &C, text: &str) -> Atom {
         // SAFETY: `_ctx` witnesses the runtime is initialized with an engine
         // current on this thread; the pointer/length pair is a valid UTF-8
         // buffer that the call copies. A freshly returned atom already
         // carries one reference for the caller (A1).
         let raw = unsafe { swipl_sys::PL_new_atom_nchars(text.len(), text.as_ptr().cast()) };
-        Atom {
-            raw,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+        Atom { raw }
     }
 
     /// Wraps a raw atom handle, taking a fresh reference on it (A1).
     ///
     /// # Safety
     ///
-    /// `raw` must be a live atom handle, and the runtime must outlive the
-    /// chosen `'c`.
-    pub(crate) unsafe fn from_raw(raw: atom_t) -> Atom<'c> {
+    /// `raw` must be a live atom handle and the process-global runtime must
+    /// have been initialized.
+    pub(crate) unsafe fn from_raw(raw: atom_t) -> Atom {
         // SAFETY: `raw` is live per this function's contract; registering
         // keeps it live for this handle's lifetime (A1).
         unsafe { swipl_sys::PL_register_atom(raw) };
-        Atom {
-            raw,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+        Atom { raw }
     }
 
     /// The atom's text (`PL_atom_nchars`).
@@ -90,48 +78,39 @@ impl<'c> Atom<'c> {
         String::from_utf8_lossy(bytes).into_owned()
     }
 
-    /// The raw atom handle. Exposed for tests and escape hatches; the handle
-    /// is only guaranteed live while this `Atom` (or another registration)
-    /// exists.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> atom_t {
+    pub(crate) fn as_raw(&self) -> atom_t {
         self.raw
     }
 }
 
-impl Clone for Atom<'_> {
+impl Clone for Atom {
     fn clone(&self) -> Self {
         // SAFETY: `self.raw` is live (A1); the clone takes its own
         // reference.
         unsafe { swipl_sys::PL_register_atom(self.raw) };
-        Atom {
-            raw: self.raw,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+        Atom { raw: self.raw }
     }
 }
 
-impl Drop for Atom<'_> {
+impl Drop for Atom {
     fn drop(&mut self) {
-        // SAFETY: this handle holds exactly one reference (A1); the `'c`
-        // borrow guarantees the runtime is still initialized.
+        // SAFETY: this handle holds exactly one reference (A1), and the
+        // process-global runtime is never torn down (R1).
         unsafe { swipl_sys::PL_unregister_atom(self.raw) };
     }
 }
 
 /// Atoms are interned: two atoms with the same text always share the same
-/// handle, so comparing the raw handles is exact value equality (independent
-/// of the borrowed context, hence the free lifetimes).
-impl<'a, 'b> PartialEq<Atom<'b>> for Atom<'a> {
-    fn eq(&self, other: &Atom<'b>) -> bool {
+/// handle, so comparing the raw handles is exact value equality.
+impl PartialEq for Atom {
+    fn eq(&self, other: &Atom) -> bool {
         self.raw == other.raw
     }
 }
 
-impl Eq for Atom<'_> {}
+impl Eq for Atom {}
 
-impl Hash for Atom<'_> {
+impl Hash for Atom {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Consistent with `PartialEq`: equal atoms share a handle, so hashing
         // the handle keeps `a == b => hash(a) == hash(b)`.
@@ -139,7 +118,7 @@ impl Hash for Atom<'_> {
     }
 }
 
-impl fmt::Debug for Atom<'_> {
+impl fmt::Debug for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Atom").field(&self.text()).finish()
     }
@@ -147,20 +126,19 @@ impl fmt::Debug for Atom<'_> {
 
 /// A handle to a name/arity pair (`PL_new_functor_sz`). Functors are global
 /// and never garbage collected, so the handle carries no reference count.
-pub struct Functor<'c> {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Functor {
     raw: functor_t,
     arity: usize,
-    _ctx: PhantomData<&'c ()>,
-    _not_send_sync: PhantomData<*mut ()>,
 }
 
-impl<'c> Functor<'c> {
+impl Functor {
     /// Creates (or finds) the functor `name/arity`.
     pub fn new<C: FliContext + ?Sized>(
-        _ctx: &'c C,
-        name: &Atom<'_>,
+        _ctx: &C,
+        name: &Atom,
         arity: usize,
-    ) -> Result<Functor<'c>, HandleError> {
+    ) -> Result<Functor, HandleError> {
         // SAFETY: `_ctx` witnesses the runtime is initialized; `name` is a
         // live atom (A1).
         let raw = unsafe { swipl_sys::PL_new_functor_sz(name.as_raw(), arity) };
@@ -172,20 +150,15 @@ impl<'c> Functor<'c> {
                 None => HandleError::FunctorConstruction,
             });
         }
-        Ok(Functor {
-            raw,
-            arity,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        })
+        Ok(Functor { raw, arity })
     }
 
     /// Creates (or finds) the functor `name/arity` from text.
     pub fn from_name<C: FliContext + ?Sized>(
-        ctx: &'c C,
+        ctx: &C,
         name: &str,
         arity: usize,
-    ) -> Result<Functor<'c>, HandleError> {
+    ) -> Result<Functor, HandleError> {
         Functor::new(ctx, &Atom::new(ctx, name), arity)
     }
 
@@ -194,22 +167,14 @@ impl<'c> Functor<'c> {
     ///
     /// # Safety
     ///
-    /// `raw` must be a live functor handle, and the runtime must outlive the
-    /// chosen `'c`.
-    pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
-        _ctx: &'c C,
-        raw: functor_t,
-    ) -> Functor<'c> {
+    /// `raw` must be a live functor handle and the process-global runtime
+    /// must have been initialized.
+    pub(crate) unsafe fn from_raw(raw: functor_t) -> Functor {
         // SAFETY: `raw` is a live functor handle per this function's contract;
         // functors are global and never garbage collected, so no registration
         // is needed (A2).
         let arity = unsafe { swipl_sys::PL_functor_arity_sz(raw) };
-        Functor {
-            raw,
-            arity,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+        Functor { raw, arity }
     }
 
     pub fn arity(&self) -> usize {
@@ -217,43 +182,49 @@ impl<'c> Functor<'c> {
     }
 
     /// The functor's name atom (`PL_functor_name`).
-    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+    pub fn name(&self) -> Atom {
         // SAFETY: `self.raw` is a live functor handle; its name is a live atom
-        // handle, and `from_raw` takes its own registration (A1). `_ctx` pins
-        // the runtime for the returned handle's lifetime (A2).
+        // handle, and `from_raw` takes its own registration (A1).
         unsafe { Atom::from_raw(swipl_sys::PL_functor_name(self.raw)) }
     }
 
-    /// The raw functor handle. Exposed for tests and escape hatches.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> functor_t {
+    pub(crate) fn as_raw(&self) -> functor_t {
         self.raw
     }
 }
 
-/// A handle to a Prolog module (`PL_new_module`, find-or-create).
-pub struct Module<'c> {
-    raw: module_t,
-    _ctx: PhantomData<&'c ()>,
-    _not_send_sync: PhantomData<*mut ()>,
+impl fmt::Debug for Functor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Functor")
+            .field("name", &self.name())
+            .field("arity", &self.arity)
+            .finish()
+    }
 }
 
-impl<'c> Module<'c> {
+/// A handle to a Prolog module (`PL_new_module`, find-or-create).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Module {
+    raw: module_t,
+}
+
+// SAFETY: modules are process-global, stable handles whose operations are
+// supported independently of a thread's current engine (A2).
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
+
+impl Module {
     /// Finds or creates the module with the given name.
-    pub fn new<C: FliContext + ?Sized>(_ctx: &'c C, name: &Atom<'_>) -> Module<'c> {
+    pub fn new<C: FliContext + ?Sized>(_ctx: &C, name: &Atom) -> Module {
         // SAFETY: `_ctx` witnesses the runtime is initialized; `name` is a
         // live atom (A1). PL_new_module finds-or-creates and has no failure
         // sentinel (A3).
         let raw = unsafe { swipl_sys::PL_new_module(name.as_raw()) };
-        Module {
-            raw,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+        Module { raw }
     }
 
     /// Finds or creates the module with the given name from text.
-    pub fn by_name<C: FliContext + ?Sized>(ctx: &'c C, name: &str) -> Module<'c> {
+    pub fn from_name<C: FliContext + ?Sized>(ctx: &C, name: &str) -> Module {
         Module::new(ctx, &Atom::new(ctx, name))
     }
 
@@ -263,53 +234,54 @@ impl<'c> Module<'c> {
     ///
     /// # Safety
     ///
-    /// `raw` must be a live module handle, and the runtime must outlive `'c`.
-    pub(crate) unsafe fn from_raw<C: FliContext + ?Sized>(
-        _ctx: &'c C,
-        raw: module_t,
-    ) -> Module<'c> {
-        Module {
-            raw,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        }
+    /// `raw` must be a live module handle and the process-global runtime must
+    /// have been initialized.
+    pub(crate) unsafe fn from_raw(raw: module_t) -> Module {
+        Module { raw }
     }
 
     /// The module's name atom (`PL_module_name`).
-    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+    pub fn name(&self) -> Atom {
         // SAFETY: `self.raw` is a live module handle; its name is a live atom,
-        // and `from_raw` takes its own registration (A1). `_ctx` pins the
-        // runtime for the returned handle's lifetime (A2).
+        // and `from_raw` takes its own registration (A1).
         unsafe { Atom::from_raw(swipl_sys::PL_module_name(self.raw)) }
     }
 
-    /// The raw module handle. Exposed for tests and escape hatches.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> module_t {
+    pub(crate) fn as_raw(&self) -> module_t {
         self.raw
+    }
+}
+
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Module").field(&self.name()).finish()
     }
 }
 
 /// A handle to a predicate, the callable unit [`Query`](crate::Query)
 /// executes.
-pub struct Predicate<'c> {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Predicate {
     raw: predicate_t,
     arity: usize,
-    _ctx: PhantomData<&'c ()>,
-    _not_send_sync: PhantomData<*mut ()>,
 }
 
-impl<'c> Predicate<'c> {
+// SAFETY: predicate references are process-global stable handles explicitly
+// intended to be cached and reused across engines and threads (A2).
+unsafe impl Send for Predicate {}
+unsafe impl Sync for Predicate {}
+
+impl Predicate {
     /// The predicate for `functor` in `module` (`PL_pred`, find-or-create).
     ///
     /// Fails if the predicate does not exist and cannot be created — e.g. the
     /// module's `program_space` limit is exhausted, which makes `PL_pred`
     /// return null and raise a resource exception.
     pub fn new<C: FliContext + ?Sized>(
-        _ctx: &'c C,
-        functor: &Functor<'_>,
-        module: &Module<'_>,
-    ) -> Result<Predicate<'c>, HandleError> {
+        _ctx: &C,
+        functor: &Functor,
+        module: &Module,
+    ) -> Result<Predicate, HandleError> {
         // SAFETY: `_ctx` witnesses the runtime is initialized; the functor
         // and module handles are valid for the runtime's lifetime.
         let raw = unsafe { swipl_sys::PL_pred(functor.as_raw(), module.as_raw()) };
@@ -324,19 +296,17 @@ impl<'c> Predicate<'c> {
         Ok(Predicate {
             raw,
             arity: functor.arity(),
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
         })
     }
 
-    /// Resolves `module:name/arity` from text (`PL_predicate`); a `None`
-    /// module means the current (typically `user`) module.
-    pub fn resolve<C: FliContext + ?Sized>(
-        _ctx: &'c C,
+    /// Finds or creates `module:name/arity` from text (`PL_predicate`); a
+    /// `None` module means the current (typically `user`) module.
+    pub fn from_name<C: FliContext + ?Sized>(
+        _ctx: &C,
         name: &str,
         arity: usize,
         module: Option<&str>,
-    ) -> Result<Predicate<'c>, HandleError> {
+    ) -> Result<Predicate, HandleError> {
         let name = CString::new(name).map_err(HandleError::InteriorNul)?;
         let module = module
             .map(|module| CString::new(module).map_err(HandleError::InteriorNul))
@@ -363,12 +333,7 @@ impl<'c> Predicate<'c> {
                 None => HandleError::PredicateConstruction,
             });
         }
-        Ok(Predicate {
-            raw,
-            arity,
-            _ctx: PhantomData,
-            _not_send_sync: PhantomData,
-        })
+        Ok(Predicate { raw, arity })
     }
 
     pub fn arity(&self) -> usize {
@@ -391,22 +356,29 @@ impl<'c> Predicate<'c> {
     }
 
     /// The predicate's name atom (`PL_predicate_info`).
-    pub fn name<'a, C: FliContext + ?Sized>(&self, _ctx: &'a C) -> Atom<'a> {
+    pub fn name(&self) -> Atom {
         // SAFETY: `name` is a live atom handle just read; `from_raw` takes its
-        // own registration (A1); `_ctx` pins the runtime (A2).
+        // own registration (A1).
         unsafe { Atom::from_raw(self.info().0) }
     }
 
     /// The predicate's defining module (`PL_predicate_info`).
-    pub fn module<'a, C: FliContext + ?Sized>(&self, ctx: &'a C) -> Module<'a> {
-        // SAFETY: `module` is a live module handle just read; `ctx` pins the
-        // runtime (A2).
-        unsafe { Module::from_raw(ctx, self.info().2) }
+    pub fn module(&self) -> Module {
+        // SAFETY: `module` is a live process-global module handle just read.
+        unsafe { Module::from_raw(self.info().2) }
     }
 
-    /// The raw predicate handle. Exposed for tests and escape hatches.
-    #[doc(hidden)]
-    pub fn as_raw(&self) -> predicate_t {
+    pub(crate) fn as_raw(&self) -> predicate_t {
         self.raw
+    }
+}
+
+impl fmt::Debug for Predicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Predicate")
+            .field("module", &self.module())
+            .field("name", &self.name())
+            .field("arity", &self.arity)
+            .finish()
     }
 }

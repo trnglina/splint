@@ -23,7 +23,7 @@ where
 
 /// Serializes `values` — a Rust tuple whose arity matches `args.len()` — into
 /// `args`, one slot per tuple element. Typically used to seed a predicate's
-/// argument vector before [`Query::open`](crate::Query::open).
+/// argument vector before calling one of the [`Query`](crate::Query) helpers.
 pub fn to_terms<C, T>(ctx: &C, args: &TermList<'_>, values: &T) -> Result<(), Error>
 where
     C: FliContext + ?Sized,
@@ -240,7 +240,9 @@ impl<'x, 'f, C: FliContext + ?Sized> Serializer for TermSerializer<'x, 'f, C> {
         let args = self.ctx.terms(1)?;
         value.serialize(TermSerializer {
             ctx: self.ctx,
-            term: args.get(0),
+            term: args
+                .get(0)
+                .expect("splint: a one-term block contains index 0"),
             option_allowed: false,
         })?;
         let functor = Functor::from_name(self.ctx, variant, 1)?;
@@ -389,7 +391,10 @@ impl<'x, 'f, C: FliContext + ?Sized> SerializeCompound<'x, 'f, C> {
                 actual: self.index + 1,
             });
         }
-        let slot = self.args.get(self.index);
+        let slot = self
+            .args
+            .get(self.index)
+            .expect("splint: the serializer checked its term-list index");
         value.serialize(TermSerializer {
             ctx: self.ctx,
             term: slot,
@@ -495,10 +500,13 @@ impl<'x, 'f, C: FliContext + ?Sized> SerializeDict<'x, 'f, C> {
         let values = self.ctx.terms(self.entries.len())?;
         let mut keys = Vec::with_capacity(self.entries.len());
         for (index, (key, value)) in self.entries.iter().enumerate() {
-            values.get(index).put_term(*value)?;
+            values
+                .get(index)
+                .expect("splint: the value block matches the entry count")
+                .put_term(*value)?;
             keys.push(Atom::new(self.ctx, key));
         }
-        let key_refs: Vec<&Atom<'_>> = keys.iter().collect();
+        let key_refs: Vec<&Atom> = keys.iter().collect();
         self.term
             .put_dict(&Atom::new(self.ctx, self.tag), &key_refs, &values)?;
         Ok(true)
@@ -963,7 +971,10 @@ impl<'x, 'a, 'f, C: FliContext + ?Sized> SerializeTuple for SerializeArgs<'x, 'a
                 actual: self.index + 1,
             });
         }
-        let slot = self.args.get(self.index);
+        let slot = self
+            .args
+            .get(self.index)
+            .expect("splint: the serializer checked its term-list index");
         value.serialize(TermSerializer {
             ctx: self.ctx,
             term: slot,

@@ -27,11 +27,13 @@ impl<'f> Term<'f> {
     /// `PL_put_dict` sorts the key/value pairs in place — reordering the
     /// `values` block — and rejects duplicate keys (surfaced as a
     /// [`TermError::Exception`]), so `values` should not be relied on to keep
-    /// its original order after this call.
+    /// its original order after this call. This direct FLI-backed operation
+    /// accepts atom keys only; integer keys can still be observed through
+    /// [`Term::dict_entries`].
     pub fn put_dict(
         &self,
-        tag: &Atom<'_>,
-        keys: &[&Atom<'_>],
+        tag: &Atom,
+        keys: &[&Atom],
         values: &TermList<'_>,
     ) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
@@ -62,11 +64,13 @@ impl<'f> Term<'f> {
 
     /// Reads the value stored under `key` in this dict into a fresh reference
     /// allocated from `ctx` (`PL_get_dict_key`). A missing key or a non-dict
-    /// term is a [`TermError::TypeMismatch`].
+    /// term is a [`TermError::TypeMismatch`]. The direct FLI accessor accepts
+    /// atom keys only; integer keys may be inspected with
+    /// [`Term::dict_entries`].
     pub fn get_dict<'a, C: FliContext + ?Sized>(
         &self,
         ctx: &'a C,
-        key: &Atom<'_>,
+        key: &Atom,
     ) -> Result<Term<'a>, TermError> {
         scope::assert_gen(self.gen, "term");
         let dest = ctx.term()?;
@@ -91,7 +95,7 @@ impl<'f> Term<'f> {
     pub fn dict_entries<'a, C: FliContext + ?Sized>(
         &self,
         ctx: &'a C,
-    ) -> Result<Vec<(DictKey<'a>, Term<'a>)>, TermError> {
+    ) -> Result<Vec<(DictKey, Term<'a>)>, TermError> {
         scope::assert_gen(self.gen, "term");
         let activation = ctx.activation();
         scope::assert_innermost(activation, "dict value reference");
@@ -165,32 +169,29 @@ impl<'f> Term<'f> {
     ///
     /// Panics if `ctx` is not the innermost open scope of the thread's current
     /// engine (C2/C3): a query is opened through it.
-    pub fn dict_tag<'a, C: FliContext + ?Sized>(
-        &self,
-        ctx: &'a C,
-    ) -> Result<Option<Atom<'a>>, TermError> {
+    pub fn dict_tag<C: FliContext + ?Sized>(&self, ctx: &C) -> Result<Option<Atom>, TermError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above.
         if !unsafe { swipl_sys::PL_is_dict(self.raw) } {
             return Err(TermError::TypeMismatch { expected: "a dict" });
         }
-        let is_dict = crate::Predicate::resolve(ctx, "is_dict", 2, None)
-            .map_err(|_| TermError::TypeMismatch { expected: "a dict" })?;
+        let is_dict =
+            crate::Predicate::from_name(ctx, "is_dict", 2, None).map_err(dict_handle_error)?;
         let args = ctx.terms(2)?;
-        args.get(0).put_term(*self)?;
-        let tag = args.get(1);
-        let mut query = crate::Query::open(ctx, &is_dict, &args, crate::QueryOptions::default())
-            .map_err(dict_query_error)?;
-        let matched = query.next_solution().map_err(dict_query_error)?;
-        if !matched {
-            // No solution: discard and report the (already checked, but be
-            // defensive) non-dict shape.
-            query.close().map_err(dict_query_error)?;
+        args.get(0)
+            .expect("splint: a two-term block contains index 0")
+            .put_term(*self)?;
+        let tag = args
+            .get(1)
+            .expect("splint: a two-term block contains index 1");
+        let matched =
+            crate::Query::once(ctx, &is_dict, &args, crate::QueryOptions::default(), |_| ())
+                .map_err(dict_query_error)?;
+        if matched.is_none() {
+            // No solution: report the (already checked, but be defensive)
+            // non-dict shape.
             return Err(TermError::TypeMismatch { expected: "a dict" });
         }
-        // Keep the solution's bindings so the tag stays bound in `args`;
-        // `close` would undo them.
-        query.cut().map_err(dict_query_error)?;
         if tag.is_variable() {
             Ok(None)
         } else {
@@ -201,8 +202,9 @@ impl<'f> Term<'f> {
 
 /// A dict key, which SWI-Prolog represents as either an atom or a small
 /// integer.
-pub enum DictKey<'c> {
-    Atom(Atom<'c>),
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DictKey {
+    Atom(Atom),
     Int(i64),
 }
 
@@ -281,11 +283,69 @@ unsafe extern "C" fn collect_dict_entry(
     0
 }
 
-/// Maps a [`QueryError`](crate::QueryError) raised while reading a dict tag
-/// back onto [`TermError`], preserving a captured Prolog exception.
+/// Maps failures from the internal `is_dict/2` detour onto the term-level
+/// operation while preserving captured Prolog exceptions.
+fn dict_handle_error(error: crate::HandleError) -> TermError {
+    match error {
+        crate::HandleError::Exception(exception) => TermError::Exception(exception),
+        _ => TermError::OperationFailed {
+            operation: "reading a dict tag",
+        },
+    }
+}
+
 fn dict_query_error(error: crate::QueryError) -> TermError {
     match error {
         crate::QueryError::Exception(exception) => TermError::Exception(exception),
-        _ => TermError::TypeMismatch { expected: "a dict" },
+        crate::QueryError::OperationAndCleanup { operation, cleanup } => {
+            match dict_query_error(*operation) {
+                exception @ TermError::Exception(_) => exception,
+                _ => match dict_query_error(*cleanup) {
+                    exception @ TermError::Exception(_) => exception,
+                    _ => TermError::OperationFailed {
+                        operation: "reading a dict tag",
+                    },
+                },
+            }
+        }
+        _ => TermError::OperationFailed {
+            operation: "reading a dict tag",
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dict_tag_detour_failures_are_not_reported_as_type_mismatches() {
+        assert!(matches!(
+            dict_handle_error(crate::HandleError::FunctorConstruction),
+            TermError::OperationFailed {
+                operation: "reading a dict tag"
+            }
+        ));
+        assert!(matches!(
+            dict_query_error(crate::QueryError::OpenFailed),
+            TermError::OperationFailed {
+                operation: "reading a dict tag"
+            }
+        ));
+    }
+
+    #[test]
+    fn dict_tag_detour_preserves_nested_prolog_exceptions() {
+        let error = crate::QueryError::OperationAndCleanup {
+            operation: Box::new(crate::QueryError::OpenFailed),
+            cleanup: Box::new(crate::QueryError::Exception(crate::PrologException(
+                "cleanup_error".to_owned(),
+            ))),
+        };
+        assert!(matches!(
+            dict_query_error(error),
+            TermError::Exception(crate::PrologException(message))
+                if message == "cleanup_error"
+        ));
     }
 }
