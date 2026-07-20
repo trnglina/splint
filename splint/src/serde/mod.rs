@@ -16,6 +16,12 @@
 //! (S1), so the caller's usual scoping obligations — the context must be the
 //! thread's innermost open scope — carry over unchanged.
 //!
+//! [`FliContext::args`](crate::FliContext::args) builds typed predicate
+//! argument blocks from [`input`], [`input_as`], [`output`], and
+//! [`LogicVar`] specifications. The typed [`Query`](crate::Query) helpers
+//! decode final bindings into owned tuples and can keep shared logical
+//! variables connected across sequential or nested calls.
+//!
 //! A [`Record`](crate::Record) may appear anywhere in a serialized or
 //! deserialized value: serializing recalls the recorded term into place, and
 //! deserializing records the term and yields a fresh [`Record`](crate::Record)
@@ -31,10 +37,15 @@
 //! References to the external `serde` crate use the absolute path `::serde`
 //! to avoid shadowing by this module (`crate::serde`).
 
+pub(crate) mod args;
 mod de;
 mod record_token;
 mod ser;
 
+pub use args::{
+    input, input_as, output, Args, ArgsSpec, ArgsValues, CallError, Input, InputAs, LogicVar,
+    Output,
+};
 pub use de::{from_term, from_terms};
 pub use ser::{to_term, to_terms};
 

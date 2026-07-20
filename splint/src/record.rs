@@ -128,6 +128,7 @@ impl Record {
         recall_raw_into(self.raw, term)
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn as_raw(&self) -> record_t {
         self.raw
     }

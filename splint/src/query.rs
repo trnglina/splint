@@ -9,6 +9,8 @@ use swipl_sys::qid_t;
 use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
+#[cfg(feature = "serde")]
+use crate::serde::args::{decode_args, Args, ArgsValues, CallError};
 use crate::term::{FliContext, Sealed, TermList};
 use crate::ScopedCallError;
 
@@ -260,6 +262,100 @@ impl<'c> Query<'c> {
                 mapper: Box::new(mapper),
             },
         })
+    }
+
+    /// Runs a predicate once using a typed argument block and returns its
+    /// final argument bindings.
+    ///
+    /// ```
+    /// use splint::{input, output, FliContext, Predicate, Query, QueryOptions};
+    ///
+    /// # fn call(frame: &splint::Frame<'_>) -> Result<(), splint::CallError> {
+    /// let succ = Predicate::from_name(frame, "succ", 2, None)?;
+    /// let args = frame.args((input(41_i64), output::<i64>()))?;
+    /// let result = Query::once_with(frame, &succ, args, QueryOptions::default())?;
+    /// assert_eq!(result, Some((41, 42)));
+    /// # Ok(()) }
+    /// ```
+    #[cfg(feature = "serde")]
+    pub fn once_with<C, Values>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, Values>,
+        options: QueryOptions,
+    ) -> Result<Option<Values>, CallError>
+    where
+        C: FliContext + ?Sized,
+        Values: ArgsValues,
+    {
+        Query::try_once_with(ctx, predicate, args, options, |_, values| Ok(values))
+    }
+
+    /// Runs a predicate once with typed arguments, then invokes `body` while
+    /// the successful solution is still current.
+    ///
+    /// `body` receives the live query context, allowing another typed query
+    /// to be nested without losing shared [`LogicVar`](crate::LogicVar)
+    /// bindings.
+    #[cfg(feature = "serde")]
+    pub fn try_once_with<C, Values, R>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, Values>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>, Values) -> Result<R, CallError>,
+    ) -> Result<Option<R>, CallError>
+    where
+        C: FliContext + ?Sized,
+        Values: ArgsValues,
+    {
+        let terms = args.terms();
+        Query::try_once(ctx, predicate, &terms, options, |query| {
+            let values = decode_args(query, &terms)?;
+            body(query, values)
+        })
+        .map_err(CallError::from_scoped)
+    }
+
+    /// Enumerates a predicate's solutions, decoding the final argument
+    /// bindings of each solution.
+    #[cfg(feature = "serde")]
+    pub fn solutions_with<C, Values>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, Values>,
+        options: QueryOptions,
+    ) -> Result<CallSolutions<'c, Values>, CallError>
+    where
+        C: FliContext + ?Sized,
+        Values: ArgsValues + 'c,
+    {
+        Query::try_solutions_with(ctx, predicate, args, options, |_, values| Ok(values))
+    }
+
+    /// Enumerates typed solutions and maps each one while its query context
+    /// remains current, permitting safely nested typed calls.
+    #[cfg(feature = "serde")]
+    pub fn try_solutions_with<C, Values, R, F>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, Values>,
+        options: QueryOptions,
+        mut mapper: F,
+    ) -> Result<CallSolutions<'c, R>, CallError>
+    where
+        C: FliContext + ?Sized,
+        Values: ArgsValues + 'c,
+        R: 'c,
+        F: for<'a> FnMut(&'a Query<'c>, Values) -> Result<R, CallError> + 'c,
+    {
+        let terms = args.terms();
+        let inner = Query::try_solutions(ctx, predicate, &terms, options, move |query| {
+            let values = decode_args(query, &terms)?;
+            mapper(query, values)
+        })
+        .map_err(CallError::Query)?;
+        Ok(CallSolutions { inner })
     }
 
     /// Advances to the next solution (`PL_next_solution`).
@@ -516,6 +612,43 @@ impl<'c, R, E> Iterator for TrySolutions<'c, R, E> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
+    }
+}
+
+/// An iterator over decoded typed predicate solutions.
+#[cfg(feature = "serde")]
+pub struct CallSolutions<'c, R> {
+    inner: TrySolutions<'c, R, CallError>,
+}
+
+#[cfg(feature = "serde")]
+impl<R> CallSolutions<'_, R> {
+    /// Ends iteration, keeping the current solution's bindings.
+    pub fn cut(self) -> Result<(), CallError> {
+        self.inner.cut().map_err(CallError::Query)
+    }
+
+    /// Ends iteration early and discards the query's bindings.
+    pub fn close(self) -> Result<(), CallError> {
+        self.inner.close().map_err(CallError::Query)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'c, R> Iterator for CallSolutions<'c, R> {
+    type Item = Result<R, CallError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|result| {
+            result.map_err(|error| match error {
+                ScopedCallError::Operation(error) => CallError::Query(error),
+                ScopedCallError::Body(error) => error,
+                ScopedCallError::BodyAndCleanup { body, cleanup } => CallError::CallAndCleanup {
+                    call: Box::new(body),
+                    cleanup,
+                },
+            })
+        })
     }
 }
 

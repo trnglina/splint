@@ -166,6 +166,42 @@ pub trait FliContext: Sealed {
         })
     }
 
+    /// Allocates and prepares a typed predicate argument block.
+    ///
+    /// The specification is a tuple built from
+    /// [`input`](crate::input), [`input_as`](crate::input_as),
+    /// [`output`](crate::output), and [`LogicVar`](crate::LogicVar) values.
+    /// The resulting block is consumed by the typed [`Query`](crate::Query)
+    /// helpers.
+    #[cfg(feature = "serde")]
+    fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S::Values>, crate::CallError>
+    where
+        S: crate::ArgsSpec,
+    {
+        crate::serde::args::prepare_args(self, spec)
+    }
+
+    /// Allocates a typed logical variable that can be shared across prepared
+    /// argument blocks.
+    ///
+    /// The variable cannot escape the allocating context:
+    ///
+    /// ```compile_fail
+    /// use splint::{FliContext, LogicVar};
+    ///
+    /// fn escape<'c, C: FliContext>(ctx: &'c C) -> LogicVar<'c, String> {
+    ///     ctx.with_frame(|frame| frame.logic_var::<String>().unwrap())
+    ///         .unwrap()
+    /// }
+    /// ```
+    #[cfg(feature = "serde")]
+    fn logic_var<T>(&self) -> Result<crate::LogicVar<'_, T>, crate::CallError>
+    where
+        T: ::serde::de::DeserializeOwned,
+    {
+        crate::serde::args::logic_var(self)
+    }
+
     /// Opens a nested foreign frame borrowing `self`.
     ///
     /// This manual form exists for [`Frame::rewind`]. Prefer

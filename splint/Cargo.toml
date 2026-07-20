@@ -23,3 +23,8 @@ serde_json = "1"
 name = "serde"
 path = "tests/serde.rs"
 required-features = ["serde"]
+
+[[test]]
+name = "typed_args"
+path = "tests/typed_args.rs"
+required-features = ["serde"]

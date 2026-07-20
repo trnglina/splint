@@ -230,11 +230,16 @@ pub use engine::{
 };
 pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
+#[cfg(feature = "serde")]
+pub use query::CallSolutions;
 pub use query::{Query, QueryError, QueryOptions, Solutions, TrySolutions};
 pub use record::{Record, RecordError};
 pub use runtime::{InitError, Runtime};
 #[cfg(feature = "serde")]
-pub use serde::{from_term, from_terms, to_term, to_terms, Error as SerdeError};
+pub use serde::{
+    from_term, from_terms, input, input_as, output, to_term, to_terms, Args, ArgsSpec, ArgsValues,
+    CallError, Error as SerdeError, Input, InputAs, LogicVar, Output,
+};
 pub use term::{
     DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,
 };
