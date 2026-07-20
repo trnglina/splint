@@ -6,8 +6,14 @@ use serde::ser::{SerializeMap, SerializeTupleStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use splint::{
     from_term, from_terms, to_term, to_terms, Engine, EngineAttributes, FliContext, Predicate,
-    Query, QueryOptions, Runtime, SerdeError, TermError, TermKind,
+    Query, QueryOptions, Record, Runtime, SerdeError, TermError, TermKind,
 };
+
+/// The private newtype-struct name `Record` uses to cross the serde
+/// boundary (`splint/src/serde/record_token.rs`). Duplicated here — it isn't
+/// exported — to drive the token branch directly from a hand-written
+/// `Serialize`/`Deserialize` impl.
+const RECORD_TOKEN: &str = "$splint::private::Record";
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     Runtime::initialize(["splint-test", "-q"]).expect("shared runtime initialize failed")
@@ -460,5 +466,132 @@ fn serializer_contract_violations_surface_as_errors() {
             to_term(&frame, term, &UnderFilled).unwrap_err(),
             SerdeError::ArityMismatch { expected: 2, actual: 1, .. }
         ));
+    });
+}
+
+#[derive(Serialize, Deserialize)]
+struct WithRecord {
+    n: i64,
+    rec: Record<'static>,
+}
+
+#[test]
+fn record_field_round_trips_and_survives_its_source_frame() {
+    with_engine(|ctx| {
+        let value = {
+            let frame = ctx.frame().unwrap();
+            let term = frame.term().unwrap();
+            term.put_term_from_text("foo(bar, 42)").unwrap();
+            let rec = Record::of(&RT, term).unwrap();
+            frame.close();
+            WithRecord { n: 7, rec }
+        };
+
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        to_term(&frame, term, &value).unwrap();
+        let decoded: WithRecord = from_term(&frame, term).unwrap();
+        assert_eq!(decoded.n, 7);
+        let recalled = decoded.rec.recall(&frame).unwrap();
+        assert_eq!(recalled.write_to_string().unwrap(), "foo(bar,42)");
+        frame.close();
+    });
+}
+
+/// Calls the private record token directly with an arbitrary payload,
+/// simulating a forged `Serialize` impl rather than `Record`'s own.
+struct FakeRecord;
+
+impl Serialize for FakeRecord {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_struct(RECORD_TOKEN, &42u64)
+    }
+}
+
+#[test]
+fn forged_record_token_serialize_errors() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        assert!(matches!(
+            to_term(&frame, term, &FakeRecord).unwrap_err(),
+            SerdeError::ForeignRecord
+        ));
+    });
+}
+
+#[test]
+fn record_to_and_from_serde_json_fails_cleanly() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_i64(1).unwrap();
+        let record = Record::of(&RT, term).unwrap();
+
+        assert!(serde_json::to_string(&record).is_err());
+        assert!(serde_json::from_str::<Record<'static>>("null").is_err());
+    });
+}
+
+/// Drives the record token's deserialize branch (claiming a fresh record
+/// handle from the source term) but always fails afterward, so the claimed
+/// handle is never turned into a `Record` — exercising the unclaimed-record
+/// cleanup path.
+struct AlwaysErrorsAfterRecording;
+
+impl<'de> Deserialize<'de> for AlwaysErrorsAfterRecording {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AlwaysErrors;
+
+        impl<'de> serde::de::Visitor<'de> for AlwaysErrors {
+            type Value = AlwaysErrorsAfterRecording;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("never succeeds")
+            }
+
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                _deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                Err(serde::de::Error::custom("intentional failure"))
+            }
+        }
+
+        deserializer.deserialize_newtype_struct(RECORD_TOKEN, AlwaysErrors)
+    }
+}
+
+#[test]
+fn unclaimed_incoming_record_is_discarded_without_crashing() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_i64(1).unwrap();
+        assert!(from_term::<_, AlwaysErrorsAfterRecording>(&frame, term).is_err());
+
+        // The frame is still usable: no crash, no corrupted engine state.
+        let other = frame.term().unwrap();
+        other.put_i64(2).unwrap();
+        assert_eq!(other.get_i64().unwrap(), 2);
+        frame.close();
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+#[allow(dead_code)] // only `is_err()` is asserted; the variant payloads are never read
+enum MaybeRecord {
+    Rec(Record<'static>),
+    Num(i64),
+}
+
+#[test]
+fn record_inside_untagged_enum_fails_cleanly() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_term_from_text("foo(bar)").unwrap();
+        assert!(from_term::<_, MaybeRecord>(&frame, term).is_err());
     });
 }

@@ -39,4 +39,4 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run tests
-        run: nix develop --command cargo test --workspace
+        run: nix develop --command cargo test --workspace --all-features
