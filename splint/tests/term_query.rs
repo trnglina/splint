@@ -111,6 +111,20 @@ fn compound_construction_and_decomposition() {
 }
 
 #[test]
+fn compound_arguments_reject_an_unrepresentable_index() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_term_from_text("f(x)").unwrap();
+
+        assert!(matches!(
+            term.get_arg(&frame, usize::MAX),
+            Err(TermError::ArgumentIndexOutOfRange { index: usize::MAX })
+        ));
+    });
+}
+
+#[test]
 fn get_functor_yields_a_reusable_handle() {
     with_engine(|ctx| {
         let frame = ctx.frame().unwrap();

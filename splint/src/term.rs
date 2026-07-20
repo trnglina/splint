@@ -35,6 +35,10 @@ pub enum TermError {
     /// The number of argument terms does not match the functor's arity.
     #[error("functor of arity {expected} cannot be built from {actual} arguments")]
     ArityMismatch { expected: usize, actual: usize },
+    /// A zero-based argument index could not be converted to the C API's
+    /// one-based index.
+    #[error("argument index {index} cannot be represented as a one-based index")]
+    ArgumentIndexOutOfRange { index: usize },
     /// A dict was given a different number of keys than values.
     #[error("dict with {keys} key(s) cannot be built from {values} value(s)")]
     DictLengthMismatch { keys: usize, values: usize },
@@ -773,11 +777,14 @@ impl<'f> Term<'f> {
         index: usize,
     ) -> Result<Term<'a>, TermError> {
         scope::assert_gen(self.gen, "term");
+        let index = index
+            .checked_add(1)
+            .ok_or(TermError::ArgumentIndexOutOfRange { index })?;
         let dest = ctx.term()?;
         // SAFETY: C3 assert above; `dest` is a live fresh reference; the C
-        // API's argument index is 1-based.
+        // API's argument index is 1-based (converted without overflow above).
         check_get(
-            unsafe { swipl_sys::PL_get_arg_sz(index + 1, self.raw, dest.raw) },
+            unsafe { swipl_sys::PL_get_arg_sz(index, self.raw, dest.raw) },
             "a compound term with enough arguments",
         )?;
         Ok(dest)
