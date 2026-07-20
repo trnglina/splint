@@ -66,16 +66,21 @@
 //!   lend the attach guard through a higher-ranked callback. The attachment
 //!   and anything borrowing it cannot escape, so restoration runs before the
 //!   helper returns; unwinding restores through the guard's `Drop`.
+//! - **E7** — [`Runtime::engine`] creates a default engine only when the
+//!   calling thread has none and intentionally leaves it attached. It is
+//!   treated like the unmanaged main engine: [`CurrentEngine`] observes it
+//!   without owning it, and temporary [`Engine`] attachments may restore it.
 //!
 //! Contexts and scopes (see `scope.rs`, `term.rs`, `query.rs`):
 //!
 //! - **C1** — Every thread carries an *activation record* `(generation,
-//!   scope depth)`. Attaching an engine mints a process-unique generation
-//!   and saves the previous record, which the guard's drop restores in
-//!   lockstep with its *verified* `PL_set_engine` restore — and only after
-//!   checking the guard is still the thread's innermost attachment (E5) —
-//!   so the record always describes the engine actually attached.
-//!   [`CurrentEngine`] snapshots the record at creation.
+//!   scope depth)`. Attaching an owned [`Engine`] through a guard mints a
+//!   process-unique generation and saves the previous record, which the
+//!   guard's drop restores in lockstep with its *verified* `PL_set_engine`
+//!   restore — and only after checking the guard is still the thread's
+//!   innermost attachment (E5) — so the record always describes the engine
+//!   actually attached. Persistent engines use the unmanaged zero
+//!   activation; [`CurrentEngine`] snapshots the record at creation.
 //! - **C2** — Frames and queries record the depth they were opened at and
 //!   must be the innermost open scope to close (LIFO): the borrow checker
 //!   enforces this for parent/child nesting, and the activation record

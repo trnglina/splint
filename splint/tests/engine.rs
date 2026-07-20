@@ -1,7 +1,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::LazyLock;
 
-use splint::{AttachError, Engine, EngineAttributes, InitError, Runtime};
+use splint::{AttachError, Engine, EngineAttributes, FliContext, InitError, Runtime};
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     Runtime::initialize(["splint-test", "-q"]).expect("shared runtime initialize failed")
@@ -62,6 +62,51 @@ fn engine_is_send_across_threads() {
                     runtime.current_engine().is_none(),
                     "worker thread should have no engine after detach"
                 );
+            })
+            .join()
+            .unwrap();
+    });
+}
+
+#[test]
+fn runtime_engine_attaches_persists_and_restores_on_a_worker_thread() {
+    let runtime: &Runtime = &RT;
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                assert!(runtime.current_engine().is_none());
+
+                {
+                    let current = runtime.engine().expect("thread engine attach failed");
+                    let term = current.term().expect("term allocation failed");
+                    term.put_i64(41).expect("term write failed");
+
+                    let mut temporary =
+                        Engine::new(runtime, EngineAttributes::default()).expect("create failed");
+                    temporary
+                        .with_attached(|ctx| {
+                            let temporary_term =
+                                ctx.term().expect("temporary term allocation failed");
+                            temporary_term
+                                .put_atom_text("temporary")
+                                .expect("temporary term write failed");
+                        })
+                        .expect("temporary attach failed");
+
+                    assert_eq!(
+                        term.get_i64().expect("persistent engine was not restored"),
+                        41
+                    );
+                }
+                assert!(
+                    runtime.current_engine().is_some(),
+                    "dropping the witness detached the persistent engine"
+                );
+
+                let reused = runtime.engine().expect("thread engine reuse failed");
+                let reused_term = reused.term().expect("reused term allocation failed");
+                reused_term.put_i64(42).expect("reused term write failed");
+                assert_eq!(reused_term.get_i64().expect("reused term read failed"), 42);
             })
             .join()
             .unwrap();

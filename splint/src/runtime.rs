@@ -2,7 +2,7 @@ use std::ffi::{CString, NulError};
 use std::os::raw::{c_char, c_int};
 use std::sync::{Mutex, PoisonError};
 
-use crate::engine::CurrentEngine;
+use crate::engine::{CurrentEngine, EngineCreateError};
 
 /// Errors from [`Runtime::initialize`] and [`Runtime::initialize_from_state`].
 #[derive(Debug, thiserror::Error)]
@@ -167,9 +167,39 @@ impl Runtime {
         Ok(Runtime { _private: () })
     }
 
+    /// Returns a witness for the calling thread's current engine, creating
+    /// and attaching one with default attributes if the thread has none.
+    ///
+    /// An engine created by this method remains attached to the native thread
+    /// after the returned witness is dropped. Later calls on the same thread
+    /// reuse it. This persistent lifecycle matches the main engine installed
+    /// on the thread that called [`Runtime::initialize`].
+    ///
+    /// Fails if SWI-Prolog cannot create the engine or was built without
+    /// native-thread support.
+    pub fn engine(&self) -> Result<CurrentEngine<'_>, EngineCreateError> {
+        if let Some(current) = self.current_engine() {
+            return Ok(current);
+        }
+
+        // SAFETY: `self` proves the runtime is initialized (R1); a null
+        // attribute pointer requests fully default thread-engine attributes.
+        // The calling thread has no engine (checked above), so success creates
+        // and attaches one. The crate intentionally leaves that engine
+        // attached for reuse rather than balancing this call with
+        // PL_thread_destroy_engine (E7).
+        match unsafe { swipl_sys::PL_thread_attach_engine(std::ptr::null_mut()) } {
+            id if id >= 0 => Ok(CurrentEngine::new()),
+            -2 => Err(EngineCreateError::ThreadingUnavailable),
+            _ => Err(EngineCreateError::Failed),
+        }
+    }
+
     /// Returns a witness for the engine currently attached to the calling
-    /// thread, if any — for example the main engine on the thread that
-    /// called [`Runtime::initialize`].
+    /// thread, if any, without creating one.
+    ///
+    /// This is the optional, side-effect-free probe. Prefer
+    /// [`Runtime::engine`] when the caller requires an engine.
     pub fn current_engine(&self) -> Option<CurrentEngine<'_>> {
         // SAFETY: `self` proves the runtime is initialized (R1); this is a
         // pure read of the calling thread's TLS engine slot.

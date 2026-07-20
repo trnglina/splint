@@ -8,13 +8,17 @@ use crate::runtime::Runtime;
 use crate::scope::{self, Activation};
 use crate::ScopedCallError;
 
-/// Errors from [`Engine::new`].
+/// Errors from creating an engine through [`Engine::new`] or
+/// [`Runtime::engine`].
 #[derive(Debug, thiserror::Error)]
 pub enum EngineCreateError {
-    /// `PL_create_engine` returned NULL (creation failed, e.g. resource
-    /// limits).
-    #[error("PL_create_engine failed")]
+    /// Engine creation or thread attachment failed, e.g. because of resource
+    /// limits.
+    #[error("failed to create a Prolog engine")]
     Failed,
+    /// SWI-Prolog was built without native-thread support.
+    #[error("SWI-Prolog does not support attaching engines to native threads")]
+    ThreadingUnavailable,
 }
 
 /// Errors from attaching an engine through the [`Engine::with_attached`]
@@ -386,17 +390,19 @@ impl Drop for AttachedEngine<'_> {
 }
 
 /// A non-owning witness that some engine is attached to the calling thread,
-/// obtained from [`Runtime::current_engine`] — for example the main engine
-/// on the thread that initialized the runtime.
+/// obtained from [`Runtime::current_engine`] or [`Runtime::engine`] — for
+/// example the main engine on the thread that initialized the runtime.
 ///
 /// Unlike [`AttachedEngine`] it restores nothing on drop; it only observes
-/// an attachment it does not own. It is `!Send + !Sync` because it describes
-/// the calling thread's own TLS state (invariant E3).
+/// an attachment it does not own. An engine created by [`Runtime::engine`]
+/// remains attached after this witness is dropped. `CurrentEngine` is
+/// `!Send + !Sync` because it describes the calling thread's own TLS state
+/// (invariant E3).
 pub struct CurrentEngine<'a> {
     /// The thread's activation when this witness was created (C1); scopes
-    /// opened through the witness belong to it. For an engine attached
-    /// outside this crate's control (e.g. the main engine), this is the
-    /// initial zero activation.
+    /// opened through the witness belong to it. For a persistent engine
+    /// (e.g. the main engine or one created by [`Runtime::engine`]), this is
+    /// the unmanaged zero activation.
     activation: Activation,
     _borrow: PhantomData<&'a Runtime>,
     _not_send_sync: PhantomData<*mut ()>,

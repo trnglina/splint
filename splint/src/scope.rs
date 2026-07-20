@@ -21,7 +21,9 @@ thread_local! {
     /// The calling thread's current activation. Generation 0 with depth 0 is
     /// the initial "no splint-managed engine" state; the main engine's
     /// witness ([`crate::CurrentEngine`]) snapshots whatever is current when
-    /// it is created, including this initial state.
+    /// it is created, including this initial state. The main engine and
+    /// persistent engines created by [`crate::Runtime::engine`] use this
+    /// unmanaged activation.
     static ACTIVATION: Cell<Activation> = const {
         Cell::new(Activation { gen: 0, depth: 0 })
     };

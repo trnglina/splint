@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use splint::{InitError, Runtime};
+use splint::{FliContext, InitError, Runtime};
 
 /// Generates a saved state with `qsave_program/2` by shelling out to the
 /// `swipl` on PATH (provided by the nix devshell), then leaks it to
@@ -56,4 +56,10 @@ fn lifecycle() {
         runtime.current_engine().is_some(),
         "main engine missing on init thread"
     );
+
+    // 5. The required accessor reuses the main engine.
+    let current = runtime.engine().expect("reuse main engine failed");
+    let term = current.term().expect("term allocation failed");
+    term.put_i64(42).expect("term write failed");
+    assert_eq!(term.get_i64().expect("term read failed"), 42);
 }
