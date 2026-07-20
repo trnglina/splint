@@ -189,7 +189,8 @@ where
 {
     let mut owned = Vec::new();
     for (index, arg) in args.into_iter().enumerate() {
-        let arg = CString::new(arg).map_err(|source| InitError::InvalidArgument { index, source })?;
+        let arg =
+            CString::new(arg).map_err(|source| InitError::InvalidArgument { index, source })?;
         owned.push(arg);
     }
     let argc: c_int = owned

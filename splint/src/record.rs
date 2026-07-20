@@ -110,10 +110,7 @@ impl Record {
     ///
     /// Panics if `ctx` is not the innermost open scope of the thread's current
     /// engine (C2/C3), as for [`FliContext::term`].
-    pub fn recall<'a, C: FliContext + ?Sized>(
-        &self,
-        ctx: &'a C,
-    ) -> Result<Term<'a>, RecordError> {
+    pub fn recall<'a, C: FliContext + ?Sized>(&self, ctx: &'a C) -> Result<Term<'a>, RecordError> {
         // `ctx.term()` already captured and cleared any resource exception;
         // preserve it rather than flattening it to the generic `Failed`.
         let dest = ctx.term().map_err(|error| match error {

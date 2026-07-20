@@ -348,7 +348,9 @@ impl<'c> Predicate<'c> {
             swipl_sys::PL_predicate(
                 name.as_ptr(),
                 arity_int,
-                module.as_ref().map_or(ptr::null(), |module| module.as_ptr()),
+                module
+                    .as_ref()
+                    .map_or(ptr::null(), |module| module.as_ptr()),
             )
         };
         if raw.is_null() {

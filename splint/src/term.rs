@@ -482,7 +482,10 @@ impl<'f> Term<'f> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: `self.raw` is a live reference on the current engine (C3
         // assert above); likewise for every FFI call on `self.raw` below.
-        check_put(unsafe { swipl_sys::PL_put_variable(self.raw) }, "PL_put_variable")
+        check_put(
+            unsafe { swipl_sys::PL_put_variable(self.raw) },
+            "PL_put_variable",
+        )
     }
 
     /// Makes the term reference the given atom (`PL_put_atom`).
@@ -521,21 +524,30 @@ impl<'f> Term<'f> {
     pub fn put_i64(&self, value: i64) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above.
-        check_put(unsafe { swipl_sys::PL_put_int64(self.raw, value) }, "PL_put_int64")
+        check_put(
+            unsafe { swipl_sys::PL_put_int64(self.raw, value) },
+            "PL_put_int64",
+        )
     }
 
     /// Makes the term an integer (`PL_put_uint64`).
     pub fn put_u64(&self, value: u64) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above.
-        check_put(unsafe { swipl_sys::PL_put_uint64(self.raw, value) }, "PL_put_uint64")
+        check_put(
+            unsafe { swipl_sys::PL_put_uint64(self.raw, value) },
+            "PL_put_uint64",
+        )
     }
 
     /// Makes the term a float (`PL_put_float`).
     pub fn put_f64(&self, value: f64) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");
         // SAFETY: C3 assert above.
-        check_put(unsafe { swipl_sys::PL_put_float(self.raw, value) }, "PL_put_float")
+        check_put(
+            unsafe { swipl_sys::PL_put_float(self.raw, value) },
+            "PL_put_float",
+        )
     }
 
     /// Makes the term `true` or `false` (`PL_put_bool`).
@@ -560,7 +572,10 @@ impl<'f> Term<'f> {
         scope::assert_gen(self.gen, "term");
         scope::assert_gen(other.gen, "term");
         // SAFETY: C3 asserts above cover both references.
-        check_put(unsafe { swipl_sys::PL_put_term(self.raw, other.raw) }, "PL_put_term")
+        check_put(
+            unsafe { swipl_sys::PL_put_term(self.raw, other.raw) },
+            "PL_put_term",
+        )
     }
 
     /// Parses `text` as a Prolog term and stores it in this reference
@@ -672,7 +687,10 @@ impl<'f> Term<'f> {
         scope::assert_gen(self.gen, "term");
         let mut raw: atom_t = 0;
         // SAFETY: as for `get_i64`.
-        check_get(unsafe { swipl_sys::PL_get_atom(self.raw, &mut raw) }, "an atom")?;
+        check_get(
+            unsafe { swipl_sys::PL_get_atom(self.raw, &mut raw) },
+            "an atom",
+        )?;
         // SAFETY: `raw` is a live atom handle just read from a term;
         // `from_raw` takes its own registration (A1).
         Ok(unsafe { Atom::from_raw(raw) })

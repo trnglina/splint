@@ -41,6 +41,9 @@ fn predicate_exposes_name_arity_and_module() {
 
         assert_eq!(predicate.name(&frame), Atom::new(&frame, "succ"));
         assert_eq!(predicate.arity(), 2);
-        assert_eq!(predicate.module(&frame).name(&frame), Atom::new(&frame, "user"));
+        assert_eq!(
+            predicate.module(&frame).name(&frame),
+            Atom::new(&frame, "user")
+        );
     });
 }

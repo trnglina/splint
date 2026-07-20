@@ -75,7 +75,8 @@ pub(crate) fn open_scope(ctx: Activation, kind: &str) -> usize {
              is not the thread's current engine",
         );
         assert_eq!(
-            now.depth, ctx.depth,
+            now.depth,
+            ctx.depth,
             "splint: cannot open a {kind} through a context that is not the \
              innermost open scope ({} scope(s) opened after it are still open)",
             now.depth.saturating_sub(ctx.depth),
@@ -150,7 +151,8 @@ pub(crate) fn assert_innermost(ctx: Activation, kind: &str) {
          to is not the thread's current engine",
     );
     assert_eq!(
-        now.depth, ctx.depth,
+        now.depth,
+        ctx.depth,
         "splint: cannot allocate a {kind} through a context that is not the \
          innermost open scope: PL_new_term_ref allocates in the innermost \
          open frame, so the reference would not live as long as its type \

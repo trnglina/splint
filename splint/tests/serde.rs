@@ -223,7 +223,15 @@ fn optional_fields_are_omitted_when_absent() {
 
         // A unit-struct field is likewise always omitted.
         let with_marker = frame.term().unwrap();
-        to_term(&frame, with_marker, &HasMarker { marker: Marker, n: 7 }).unwrap();
+        to_term(
+            &frame,
+            with_marker,
+            &HasMarker {
+                marker: Marker,
+                n: 7,
+            },
+        )
+        .unwrap();
         assert_eq!(with_marker.dict_entries(&frame).unwrap().len(), 1);
     });
 }
@@ -325,12 +333,14 @@ fn tuple_structs_round_trip_as_compounds() {
 fn maps_round_trip_with_scalar_keys() {
     with_engine(|ctx| {
         let frame = ctx.frame().unwrap();
-        let by_name: BTreeMap<String, i64> =
-            [("a".to_owned(), 1), ("b".to_owned(), 2)].into_iter().collect();
+        let by_name: BTreeMap<String, i64> = [("a".to_owned(), 1), ("b".to_owned(), 2)]
+            .into_iter()
+            .collect();
         assert_eq!(round_trip(&frame, &by_name), by_name);
 
-        let by_index: BTreeMap<i64, String> =
-            [(1, "one".to_owned()), (2, "two".to_owned())].into_iter().collect();
+        let by_index: BTreeMap<i64, String> = [(1, "one".to_owned()), (2, "two".to_owned())]
+            .into_iter()
+            .collect();
         assert_eq!(round_trip(&frame, &by_index), by_index);
 
         let by_flag: BTreeMap<bool, i64> = [(true, 1), (false, 0)].into_iter().collect();
@@ -376,7 +386,8 @@ fn self_describing_deserialization_supports_untagged_and_internally_tagged_enums
         }
 
         let leaf = frame.term().unwrap();
-        leaf.put_term_from_text("_{kind: 'Leaf', value: 7}").unwrap();
+        leaf.put_term_from_text("_{kind: 'Leaf', value: 7}")
+            .unwrap();
         assert_eq!(
             from_term::<_, Node>(&frame, leaf).unwrap(),
             Node::Leaf { value: 7 }
@@ -464,7 +475,11 @@ fn serializer_contract_violations_surface_as_errors() {
         ));
         assert!(matches!(
             to_term(&frame, term, &UnderFilled).unwrap_err(),
-            SerdeError::ArityMismatch { expected: 2, actual: 1, .. }
+            SerdeError::ArityMismatch {
+                expected: 2,
+                actual: 1,
+                ..
+            }
         ));
     });
 }

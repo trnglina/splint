@@ -203,10 +203,7 @@ fn type_mismatch_is_not_an_exception() {
         let frame = ctx.frame().unwrap();
         let t = frame.term().unwrap();
         t.put_atom_text("not_a_number").unwrap();
-        assert!(matches!(
-            t.get_i64(),
-            Err(TermError::TypeMismatch { .. })
-        ));
+        assert!(matches!(t.get_i64(), Err(TermError::TypeMismatch { .. })));
         // get_text on a compound is also a type mismatch...
         t.put_term_from_text("f(x)").unwrap();
         assert!(matches!(t.get_text(), Err(TermError::TypeMismatch { .. })));
