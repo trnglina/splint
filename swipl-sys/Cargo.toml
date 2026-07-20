@@ -1,7 +1,10 @@
 [package]
 name = "swipl-sys"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Raw bindgen-generated Rust bindings to the SWI-Prolog C API"
 
 [build-dependencies]
 bindgen = "0.70"

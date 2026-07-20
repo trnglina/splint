@@ -1,13 +1,17 @@
 [package]
 name = "splint"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Safe, low-level Rust bindings for embedding SWI-Prolog"
+readme = "../README.md"
 
 [features]
 serde = ["dep:serde"]
 
 [dependencies]
-swipl-sys = { path = "../swipl-sys" }
+swipl-sys = { version = "0.1.0", path = "../swipl-sys" }
 thiserror = "2.0.18"
 serde = { version = "1", optional = true, default-features = false, features = ["std"] }
 

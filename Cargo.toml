@@ -7,3 +7,6 @@ members = [
 
 [workspace.package]
 edition = "2021"
+version = "0.1.0"
+license = "Unlicense"
+repository = "https://github.com/trnglina/splint"
