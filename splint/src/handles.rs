@@ -17,6 +17,8 @@ pub enum HandleError {
     FunctorConstruction,
     #[error("PL_pred/PL_predicate reported failure")]
     PredicateConstruction,
+    #[error("predicate arity {arity} exceeds the C API's integer range")]
+    PredicateArityOutOfRange { arity: usize },
     #[error("name contains an interior NUL byte")]
     InteriorNul(#[source] std::ffi::NulError),
     /// Constructing the handle raised a Prolog exception (e.g. a
@@ -339,8 +341,8 @@ impl<'c> Predicate<'c> {
         let module = module
             .map(|module| CString::new(module).map_err(HandleError::InteriorNul))
             .transpose()?;
-        let arity_int = c_int::try_from(arity)
-            .unwrap_or_else(|_| panic!("splint: predicate arity {arity} exceeds c_int"));
+        let arity_int =
+            c_int::try_from(arity).map_err(|_| HandleError::PredicateArityOutOfRange { arity })?;
         // SAFETY: `_ctx` witnesses the runtime is initialized; both strings
         // are NUL-terminated and live across the call, which copies what it
         // needs.

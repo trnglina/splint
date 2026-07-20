@@ -1,6 +1,8 @@
 use std::sync::LazyLock;
 
-use splint::{Atom, Engine, EngineAttributes, FliContext, Functor, Module, Predicate, Runtime};
+use splint::{
+    Atom, Engine, EngineAttributes, FliContext, Functor, HandleError, Module, Predicate, Runtime,
+};
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     Runtime::initialize(["splint-test", "-q"]).expect("shared runtime initialize failed")
@@ -45,5 +47,15 @@ fn predicate_exposes_name_arity_and_module() {
             predicate.module(&frame).name(&frame),
             Atom::new(&frame, "user")
         );
+    });
+}
+
+#[test]
+fn predicate_rejects_arities_outside_the_c_api_range() {
+    with_engine(|ctx| {
+        assert!(matches!(
+            Predicate::resolve(ctx, "p", usize::MAX, None),
+            Err(HandleError::PredicateArityOutOfRange { arity: usize::MAX })
+        ));
     });
 }
