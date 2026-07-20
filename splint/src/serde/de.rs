@@ -504,6 +504,9 @@ impl<'x, 'de, 'f, C: FliContext + ?Sized> MapAccess<'de> for MapDeserializer<'x,
     where
         K: DeserializeSeed<'de>,
     {
+        if self.value.is_some() {
+            return Err(Error::MapKeyOrder("requested"));
+        }
         match self.entries.next() {
             Some((key, value)) => {
                 self.value = Some(value);

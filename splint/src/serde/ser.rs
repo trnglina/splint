@@ -382,8 +382,13 @@ impl<'x, 'f, C: FliContext + ?Sized> SerializeCompound<'x, 'f, C> {
     where
         T: Serialize + ?Sized,
     {
-        // Over-supplying fields relative to the declared arity lands on
-        // `TermList::get`'s bounds panic, like any other index misuse.
+        if self.index == self.args.len() {
+            return Err(Error::ArityMismatch {
+                name: self.name.to_owned(),
+                expected: self.args.len(),
+                actual: self.index + 1,
+            });
+        }
         let slot = self.args.get(self.index);
         value.serialize(TermSerializer {
             ctx: self.ctx,
@@ -508,6 +513,9 @@ impl<'x, 'f, C: FliContext + ?Sized> SerializeMap for SerializeDict<'x, 'f, C> {
     where
         T: Serialize + ?Sized,
     {
+        if self.pending_key.is_some() {
+            return Err(Error::MapKeyOrder("serialized"));
+        }
         self.pending_key = Some(key.serialize(MapKeySerializer)?);
         Ok(())
     }
@@ -524,6 +532,9 @@ impl<'x, 'f, C: FliContext + ?Sized> SerializeMap for SerializeDict<'x, 'f, C> {
     }
 
     fn end(self) -> Result<bool, Error> {
+        if self.pending_key.is_some() {
+            return Err(Error::MapKeyWithoutValue);
+        }
         self.finish()
     }
 }
@@ -945,6 +956,13 @@ impl<'x, 'a, 'f, C: FliContext + ?Sized> SerializeTuple for SerializeArgs<'x, 'a
     where
         T: Serialize + ?Sized,
     {
+        if self.index == self.args.len() {
+            return Err(Error::ArityMismatch {
+                name: "the argument list".to_owned(),
+                expected: self.args.len(),
+                actual: self.index + 1,
+            });
+        }
         let slot = self.args.get(self.index);
         value.serialize(TermSerializer {
             ctx: self.ctx,

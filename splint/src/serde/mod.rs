@@ -108,6 +108,16 @@ pub enum Error {
     #[error("map value {0} before its key")]
     MapValueOrder(&'static str),
 
+    /// A `SerializeMap`/`MapAccess` user supplied or requested another key
+    /// before completing the preceding key/value pair.
+    #[error("map key {0} before the previous key's value")]
+    MapKeyOrder(&'static str),
+
+    /// A `SerializeMap` user ended the map after a key without supplying its
+    /// value.
+    #[error("map ended before the last key's value was serialized")]
+    MapKeyWithoutValue,
+
     /// A tuple-shaped `Serialize` implementation supplied a different number
     /// of fields than it declared, or than the destination expects.
     #[error("{name} declared arity {expected} but serialized {actual} field(s)")]

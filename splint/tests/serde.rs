@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, MapAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeTupleStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use splint::{
@@ -464,6 +464,68 @@ impl Serialize for UnderFilled {
     }
 }
 
+/// Declares arity 1 but supplies two fields.
+struct OverFilled;
+
+impl Serialize for OverFilled {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut compound = serializer.serialize_tuple_struct("over", 1)?;
+        compound.serialize_field(&1i64)?;
+        compound.serialize_field(&2i64)?;
+        compound.end()
+    }
+}
+
+/// Ends a map after serializing a key but not its value.
+struct KeyWithoutValue;
+
+impl Serialize for KeyWithoutValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_key("k")?;
+        map.end()
+    }
+}
+
+/// Serializes a second map key before the first key's value.
+struct KeyBeforeValue;
+
+impl Serialize for KeyBeforeValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_key("a")?;
+        map.serialize_key("b")?;
+        map.serialize_value(&1i64)?;
+        map.end()
+    }
+}
+
+/// Requests a second dict key before consuming the first key's value.
+#[derive(Debug)]
+struct RequestsKeyBeforeValue;
+
+impl<'de> Deserialize<'de> for RequestsKeyBeforeValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RequestsKey;
+
+        impl<'de> Visitor<'de> for RequestsKey {
+            type Value = RequestsKeyBeforeValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a map")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let _: Option<String> = map.next_key()?;
+                let _: Option<String> = map.next_key()?;
+                Ok(RequestsKeyBeforeValue)
+            }
+        }
+
+        deserializer.deserialize_map(RequestsKey)
+    }
+}
+
 #[test]
 fn serializer_contract_violations_surface_as_errors() {
     with_engine(|ctx| {
@@ -480,6 +542,28 @@ fn serializer_contract_violations_surface_as_errors() {
                 actual: 1,
                 ..
             }
+        ));
+        assert!(matches!(
+            to_term(&frame, term, &OverFilled).unwrap_err(),
+            SerdeError::ArityMismatch {
+                expected: 1,
+                actual: 2,
+                ..
+            }
+        ));
+        assert!(matches!(
+            to_term(&frame, term, &KeyWithoutValue).unwrap_err(),
+            SerdeError::MapKeyWithoutValue
+        ));
+        assert!(matches!(
+            to_term(&frame, term, &KeyBeforeValue).unwrap_err(),
+            SerdeError::MapKeyOrder("serialized")
+        ));
+
+        term.put_term_from_text("_{a: 1, b: 2}").unwrap();
+        assert!(matches!(
+            from_term::<_, RequestsKeyBeforeValue>(&frame, term).unwrap_err(),
+            SerdeError::MapKeyOrder("requested")
         ));
     });
 }
