@@ -170,9 +170,10 @@ pub trait FliContext: Sealed {
     ///
     /// The specification is a tuple built from
     /// [`input`](crate::input), [`input_as`](crate::input_as),
-    /// [`output`](crate::output), and existing [`Term`] values adapted with
-    /// [`Term::as_arg`]. The resulting block is consumed by the typed
-    /// [`Query`](crate::Query) helpers.
+    /// [`output`](crate::output), and existing [`Term`] values. A bare
+    /// `Term` is passed through without decoding; [`Term::as_arg`] opts into
+    /// decoding its final binding. The resulting block is consumed by the
+    /// typed [`Query`](crate::Query) helpers.
     #[cfg(feature = "serde")]
     fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S>, crate::CallError>
     where
@@ -494,6 +495,8 @@ impl<'f> Term<'f> {
     ///
     /// Copies of a `Term` alias the same Prolog term reference, so the term
     /// remains directly inspectable and can be reused across argument blocks.
+    /// Pass a bare `Term` to [`FliContext::args`] when no decoding is needed;
+    /// that position in the result tuple will be `()`.
     #[cfg(feature = "serde")]
     pub fn as_arg<T>(self) -> crate::TermArg<'f, T>
     where

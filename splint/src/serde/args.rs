@@ -207,6 +207,19 @@ where
     }
 }
 
+impl sealed::Argument for Term<'_> {
+    type Value = ();
+
+    fn seed<Ctx: FliContext + ?Sized>(self, _ctx: &Ctx, term: Term<'_>) -> Result<(), Error> {
+        term.put_term(self)?;
+        Ok(())
+    }
+
+    fn decode<Ctx: FliContext + ?Sized>(_ctx: &Ctx, _term: Term<'_>) -> Result<Self::Value, Error> {
+        Ok(())
+    }
+}
+
 /// A sealed tuple of typed predicate argument specifications.
 #[doc(hidden)]
 pub trait ArgsSpec: sealed::Tuple {

@@ -18,10 +18,9 @@
 //!
 //! [`FliContext::args`](crate::FliContext::args) builds typed predicate
 //! argument blocks from [`input`], [`input_as`], [`output`], and existing
-//! [`Term`](crate::Term) values adapted with [`Term::as_arg`](crate::Term::as_arg).
-//! The typed [`Query`](crate::Query) helpers decode requested final bindings
-//! into owned tuples and can keep terms connected across sequential or nested
-//! calls.
+//! [`Term`](crate::Term) values. The typed [`Query`](crate::Query) helpers
+//! decode requested final bindings into owned tuples and can keep terms
+//! connected across sequential or nested calls.
 //!
 //! A [`Record`](crate::Record) may appear anywhere in a serialized or
 //! deserialized value: serializing recalls the recorded term into place, and

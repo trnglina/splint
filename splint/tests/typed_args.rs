@@ -154,6 +154,34 @@ fn typed_solution_iterators_decode_and_can_keep_a_binding() {
 }
 
 #[test]
+fn bare_terms_are_passed_without_decoding() {
+    with_frame(|frame| {
+        let nonvar = predicate(frame, "nonvar", 1);
+        let value = frame.term().unwrap();
+        value.put_term_from_text("hello(world)").unwrap();
+
+        let recorded_args = frame.args((value.as_arg::<Record>(),)).unwrap();
+        let (record,) = Query::once_with(frame, &nonvar, recorded_args, QueryOptions::default())
+            .unwrap()
+            .unwrap();
+
+        let functor = value.get_functor().unwrap();
+        assert_eq!(functor.name().text(), "hello");
+        assert_eq!(functor.arity(), 1);
+        assert_eq!(
+            record.recall(frame).unwrap().write_to_string().unwrap(),
+            "hello(world)"
+        );
+
+        let pass_through_args = frame.args((value,)).unwrap();
+        assert_eq!(
+            Query::once_with(frame, &nonvar, pass_through_args, QueryOptions::default()).unwrap(),
+            Some(((),))
+        );
+    });
+}
+
+#[test]
 fn typed_once_callbacks_can_nest_a_call() {
     with_frame(|frame| {
         let succ = predicate(frame, "succ", 2);
