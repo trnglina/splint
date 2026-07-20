@@ -27,7 +27,7 @@ fn typed_once_encodes_inputs_and_decodes_all_final_arguments() {
         let args = frame.args((input(41_i64), output::<i64>())).unwrap();
 
         let result = Query::once_with(frame, &succ, args, QueryOptions::default()).unwrap();
-        assert_eq!(result, Some((41, 42)));
+        assert_eq!(result, (41, 42));
     });
 }
 
@@ -41,7 +41,7 @@ fn input_as_accepts_borrowed_input_and_decodes_an_owned_value() {
 
         let result =
             Query::once_with(frame, &string_length, args, QueryOptions::default()).unwrap();
-        assert_eq!(result, Some(("world".to_owned(), 5)));
+        assert_eq!(result, ("world".to_owned(), 5));
     });
 }
 
@@ -53,28 +53,33 @@ fn typed_outputs_can_be_records() {
             .args((output::<Record>(), input(vec![7_i64, 8, 9])))
             .unwrap();
 
-        let (record, values) = Query::once_with(frame, &member, args, QueryOptions::default())
-            .unwrap()
-            .unwrap();
+        let (record, values) =
+            Query::once_with(frame, &member, args, QueryOptions::default()).unwrap();
         assert_eq!(values, [7, 8, 9]);
         assert_eq!(record.recall(frame).unwrap().get_i64().unwrap(), 7);
     });
 }
 
 #[test]
-fn typed_calls_support_zero_arity_and_no_solution() {
+fn prepared_calls_require_a_solution_and_have_an_explicit_optional_form() {
     with_frame(|frame| {
         let true_predicate = predicate(frame, "true", 0);
         let args = frame.args(()).unwrap();
         assert_eq!(
             Query::once_with(frame, &true_predicate, args, QueryOptions::default()).unwrap(),
-            Some(())
+            ()
         );
 
         let succ = predicate(frame, "succ", 2);
         let args = frame.args((input(1_i64), input(3_i64))).unwrap();
+        assert!(matches!(
+            Query::once_with(frame, &succ, args, QueryOptions::default()),
+            Err(CallError::Query(QueryError::NoSolution))
+        ));
+
+        let args = frame.args((input(1_i64), input(3_i64))).unwrap();
         assert_eq!(
-            Query::once_with(frame, &succ, args, QueryOptions::default()).unwrap(),
+            Query::once_optional_with(frame, &succ, args, QueryOptions::default()).unwrap(),
             None
         );
     });
@@ -125,7 +130,7 @@ fn terms_preserve_bindings_across_committed_calls() {
         let first_args = frame.args((input(1_i64), middle.as_arg::<i64>())).unwrap();
         assert_eq!(
             Query::once_with(frame, &succ, first_args, QueryOptions::default()).unwrap(),
-            Some((1, 2))
+            (1, 2)
         );
         assert_eq!(middle.get_i64().unwrap(), 2);
 
@@ -134,7 +139,7 @@ fn terms_preserve_bindings_across_committed_calls() {
             .unwrap();
         assert_eq!(
             Query::once_with(frame, &succ, second_args, QueryOptions::default()).unwrap(),
-            Some((2, 3))
+            (2, 3)
         );
     });
 }
@@ -164,9 +169,8 @@ fn bare_terms_are_passed_without_decoding() {
         value.put_term_from_text("hello(world)").unwrap();
 
         let recorded_args = frame.args((value.as_arg::<Record>(),)).unwrap();
-        let (record,) = Query::once_with(frame, &nonvar, recorded_args, QueryOptions::default())
-            .unwrap()
-            .unwrap();
+        let (record,) =
+            Query::once_with(frame, &nonvar, recorded_args, QueryOptions::default()).unwrap();
 
         let functor = value.get_functor().unwrap();
         assert_eq!(functor.name().text(), "hello");
@@ -179,7 +183,7 @@ fn bare_terms_are_passed_without_decoding() {
         let pass_through_args = frame.args((value,)).unwrap();
         assert_eq!(
             Query::once_with(frame, &nonvar, pass_through_args, QueryOptions::default()).unwrap(),
-            Some(((),))
+            ((),)
         );
     });
 }
@@ -204,7 +208,7 @@ fn typed_once_callbacks_can_nest_a_call() {
         )
         .unwrap();
 
-        assert_eq!(nested, Some(Some((2, 3))));
+        assert_eq!(nested, (2, 3));
     });
 }
 
@@ -233,7 +237,7 @@ fn typed_solution_callbacks_can_nest_calls_for_each_solution() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
-        assert_eq!(results, [Some((1, 2)), Some((2, 3)), Some((3, 4))]);
+        assert_eq!(results, [(1, 2), (2, 3), (3, 4)]);
     });
 }
 

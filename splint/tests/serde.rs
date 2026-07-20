@@ -401,11 +401,7 @@ fn query_arguments_round_trip_through_to_terms_and_from_terms() {
         let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
         to_terms(frame, &args, &(2i64, 3i64)).unwrap();
-        assert!(
-            Query::once(frame, &succ, &args, QueryOptions::default(), |_| ())
-                .unwrap()
-                .is_some()
-        );
+        Query::once(frame, &succ, &args, QueryOptions::default(), |_| ()).unwrap();
 
         // A tuple of the wrong arity is rejected up front.
         assert!(matches!(

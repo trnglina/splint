@@ -313,16 +313,13 @@ fn deterministic_query_binds_output() {
         let args = frame.terms(2).unwrap();
         args.get(0).unwrap().put_i64(1).unwrap();
 
-        let found = Query::once(frame, &succ, &args, QueryOptions::default(), |_| ())
-            .unwrap()
-            .is_some();
-        assert!(found);
+        Query::once(frame, &succ, &args, QueryOptions::default(), |_| ()).unwrap();
         assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 2);
     });
 }
 
 #[test]
-fn query_once_commits_a_solution_and_reports_no_solution() {
+fn query_once_requires_a_solution_and_has_an_explicit_optional_form() {
     with_frame(|frame| {
         let succ = Predicate::from_name(frame, "succ", 2, None).unwrap();
         let args = frame.terms(2).unwrap();
@@ -332,13 +329,19 @@ fn query_once_commits_a_solution_and_reports_no_solution() {
             args.get(1).unwrap().get_i64().unwrap()
         })
         .unwrap();
-        assert_eq!(value, Some(9));
+        assert_eq!(value, 9);
         assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 9);
 
         let fail = Predicate::from_name(frame, "fail", 0, None).unwrap();
         let no_args = frame.terms(0).unwrap();
-        let value = Query::once(frame, &fail, &no_args, QueryOptions::default(), |_| 1).unwrap();
-        assert_eq!(value, None);
+        assert!(matches!(
+            Query::once(frame, &fail, &no_args, QueryOptions::default(), |_| 1),
+            Err(QueryError::NoSolution)
+        ));
+        assert_eq!(
+            Query::once_optional(frame, &fail, &no_args, QueryOptions::default(), |_| 1).unwrap(),
+            None
+        );
     });
 }
 
@@ -513,11 +516,7 @@ fn cut_keeps_bindings_close_discards_them() {
 
         let cut_args = frame.terms(2).unwrap();
         cut_args.get(0).unwrap().put_i64(4).unwrap();
-        assert!(
-            Query::once(frame, &succ, &cut_args, QueryOptions::default(), |_| ())
-                .unwrap()
-                .is_some()
-        );
+        Query::once(frame, &succ, &cut_args, QueryOptions::default(), |_| ()).unwrap();
         assert_eq!(cut_args.get(1).unwrap().get_i64().unwrap(), 5);
 
         let close_args = frame.terms(2).unwrap();
@@ -568,11 +567,7 @@ fn predicate_via_functor_and_module() {
 
         let args = frame.terms(2).unwrap();
         args.get(0).unwrap().put_i64(7).unwrap();
-        assert!(
-            Query::once(frame, &succ, &args, QueryOptions::default(), |_| ())
-                .unwrap()
-                .is_some()
-        );
+        Query::once(frame, &succ, &args, QueryOptions::default(), |_| ()).unwrap();
         assert_eq!(args.get(1).unwrap().get_i64().unwrap(), 8);
     });
 }

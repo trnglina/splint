@@ -102,15 +102,14 @@ fn global_handles_can_be_reused_on_another_thread_and_engine() {
 
             let query_args = frame.terms(2).unwrap();
             query_args.get(0).unwrap().put_i64(7).unwrap();
-            assert!(splint::Query::once(
+            splint::Query::once(
                 frame,
                 &predicate,
                 &query_args,
                 splint::QueryOptions::default(),
                 |_| (),
             )
-            .unwrap()
-            .is_some());
+            .unwrap();
             assert_eq!(query_args.get(1).unwrap().get_i64().unwrap(), 8);
         });
     })

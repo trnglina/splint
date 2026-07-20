@@ -44,6 +44,9 @@ pub enum QueryError {
     ArityMismatch { expected: usize, actual: usize },
     #[error("PL_open_query reported failure")]
     OpenFailed,
+    /// The predicate produced no solution.
+    #[error("predicate has no solution")]
+    NoSolution,
     /// The goal (or closing it) raised a Prolog exception; the exception has
     /// been cleared from the engine.
     #[error("prolog exception: {0}")]
@@ -61,7 +64,8 @@ pub enum QueryError {
 /// A callback-scoped view of the current solution of a Prolog query.
 ///
 /// Values of this type are supplied to the callbacks accepted by
-/// [`Query::once`], [`Query::try_once`], [`Query::solutions`], and
+/// [`Query::once`], [`Query::once_optional`], [`Query::try_once`],
+/// [`Query::try_once_optional`], [`Query::solutions`], and
 /// [`Query::try_solutions`]. The query is also an [`FliContext`], allowing
 /// solution-local scratch terms to be allocated without letting them escape
 /// into the next solution.
@@ -136,9 +140,26 @@ impl<'c> Query<'c> {
     /// Runs `body` against the first solution of a newly opened query.
     ///
     /// A successful callback cuts the query, keeping that solution's
-    /// bindings. No solution closes the query and returns `Ok(None)`. A panic
+    /// bindings. No solution returns [`QueryError::NoSolution`]. A panic
     /// closes the query through its destructor.
     pub fn once<C, R>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>) -> R,
+    ) -> Result<R, QueryError>
+    where
+        C: FliContext + ?Sized,
+    {
+        Query::once_optional(ctx, predicate, args, options, body)?.ok_or(QueryError::NoSolution)
+    }
+
+    /// Optional counterpart to [`Query::once`].
+    ///
+    /// Use this when no solution is an expected value rather than a
+    /// not-found error.
+    pub fn once_optional<C, R>(
         ctx: &'c C,
         predicate: &Predicate,
         args: &TermList<'_>,
@@ -166,8 +187,27 @@ impl<'c> Query<'c> {
     /// Fallible counterpart to [`Query::once`].
     ///
     /// `Ok` cuts the query and keeps the first solution. `Err` or a panic
-    /// closes it and rolls its bindings back.
+    /// closes it and rolls its bindings back. No solution is reported as
+    /// [`ScopedCallError::Operation`] containing [`QueryError::NoSolution`].
     pub fn try_once<C, R, E>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: &TermList<'_>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>) -> Result<R, E>,
+    ) -> Result<R, ScopedCallError<QueryError, E>>
+    where
+        C: FliContext + ?Sized,
+    {
+        Query::try_once_optional(ctx, predicate, args, options, body)?
+            .ok_or(ScopedCallError::Operation(QueryError::NoSolution))
+    }
+
+    /// Optional counterpart to [`Query::try_once`].
+    ///
+    /// Use this when no solution is an expected value rather than a
+    /// not-found error.
+    pub fn try_once_optional<C, R, E>(
         ctx: &'c C,
         predicate: &Predicate,
         args: &TermList<'_>,
@@ -266,6 +306,9 @@ impl<'c> Query<'c> {
     /// Runs a predicate once using a prepared argument block and returns its
     /// requested final argument values.
     ///
+    /// No solution is reported as
+    /// `CallError::Query(QueryError::NoSolution)`.
+    ///
     /// ```
     /// use splint::{FliContext, Predicate, Query, QueryOptions};
     ///
@@ -275,10 +318,55 @@ impl<'c> Query<'c> {
     /// value.put_atom_text("hello").unwrap();
     /// let args = frame.args((value,))?;
     /// let result = Query::once_with(frame, &nonvar, args, QueryOptions::default())?;
-    /// assert_eq!(result, Some(((),)));
+    /// assert_eq!(result, ((),));
     /// # Ok(()) }
     /// ```
     pub fn once_with<C, S>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, S>,
+        options: QueryOptions,
+    ) -> Result<S::Values, CallError>
+    where
+        C: FliContext + ?Sized,
+        S: ArgsSpec,
+    {
+        Query::try_once_with(ctx, predicate, args, options, |_, values| Ok(values))
+    }
+
+    /// Runs a predicate once with prepared arguments, then invokes `body`
+    /// while the successful solution is still current.
+    ///
+    /// No solution is reported as
+    /// `CallError::Query(QueryError::NoSolution)`.
+    ///
+    /// `body` receives the live query context, allowing another prepared query
+    /// to be nested without losing bindings shared through existing
+    /// [`Term`](crate::Term) values.
+    pub fn try_once_with<C, S, R>(
+        ctx: &'c C,
+        predicate: &Predicate,
+        args: Args<'c, S>,
+        options: QueryOptions,
+        body: impl for<'a> FnOnce(&'a Query<'c>, S::Values) -> Result<R, CallError>,
+    ) -> Result<R, CallError>
+    where
+        C: FliContext + ?Sized,
+        S: ArgsSpec,
+    {
+        let terms = args.terms();
+        Query::try_once(ctx, predicate, &terms, options, |query| {
+            let values = decode_args::<_, S>(query, &terms)?;
+            body(query, values)
+        })
+        .map_err(CallError::from_scoped)
+    }
+
+    /// Optional counterpart to [`Query::once_with`].
+    ///
+    /// Use this when no solution is an expected value rather than a
+    /// not-found error.
+    pub fn once_optional_with<C, S>(
         ctx: &'c C,
         predicate: &Predicate,
         args: Args<'c, S>,
@@ -288,16 +376,14 @@ impl<'c> Query<'c> {
         C: FliContext + ?Sized,
         S: ArgsSpec,
     {
-        Query::try_once_with(ctx, predicate, args, options, |_, values| Ok(values))
+        Query::try_once_optional_with(ctx, predicate, args, options, |_, values| Ok(values))
     }
 
-    /// Runs a predicate once with prepared arguments, then invokes `body` while
-    /// the successful solution is still current.
+    /// Optional counterpart to [`Query::try_once_with`].
     ///
-    /// `body` receives the live query context, allowing another prepared query
-    /// to be nested without losing bindings shared through existing
-    /// [`Term`](crate::Term) values.
-    pub fn try_once_with<C, S, R>(
+    /// Use this when no solution is an expected value rather than a
+    /// not-found error.
+    pub fn try_once_optional_with<C, S, R>(
         ctx: &'c C,
         predicate: &Predicate,
         args: Args<'c, S>,
@@ -309,7 +395,7 @@ impl<'c> Query<'c> {
         S: ArgsSpec,
     {
         let terms = args.terms();
-        Query::try_once(ctx, predicate, &terms, options, |query| {
+        Query::try_once_optional(ctx, predicate, &terms, options, |query| {
             let values = decode_args::<_, S>(query, &terms)?;
             body(query, values)
         })

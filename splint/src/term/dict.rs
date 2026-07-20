@@ -184,9 +184,14 @@ impl<'f> Term<'f> {
         let tag = args
             .get(1)
             .expect("splint: a two-term block contains index 1");
-        let matched =
-            crate::Query::once(ctx, &is_dict, &args, crate::QueryOptions::default(), |_| ())
-                .map_err(dict_query_error)?;
+        let matched = crate::Query::once_optional(
+            ctx,
+            &is_dict,
+            &args,
+            crate::QueryOptions::default(),
+            |_| (),
+        )
+        .map_err(dict_query_error)?;
         if matched.is_none() {
             // No solution: report the (already checked, but be defensive)
             // non-dict shape.

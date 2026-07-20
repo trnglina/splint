@@ -27,7 +27,7 @@ fn bare_terms_form_prepared_argument_blocks_without_decoding() {
         let args = frame.args((value,)).unwrap();
         assert_eq!(
             Query::once_with(frame, &nonvar, args, QueryOptions::default()).unwrap(),
-            Some(((),))
+            ((),)
         );
 
         let functor = value.get_functor().unwrap();
