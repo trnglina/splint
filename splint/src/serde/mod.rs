@@ -17,10 +17,11 @@
 //! thread's innermost open scope — carry over unchanged.
 //!
 //! [`FliContext::args`](crate::FliContext::args) builds typed predicate
-//! argument blocks from [`input`], [`input_as`], [`output`], and
-//! [`LogicVar`] specifications. The typed [`Query`](crate::Query) helpers
-//! decode final bindings into owned tuples and can keep shared logical
-//! variables connected across sequential or nested calls.
+//! argument blocks from [`input`], [`input_as`], [`output`], and existing
+//! [`Term`](crate::Term) values adapted with [`Term::as_arg`](crate::Term::as_arg).
+//! The typed [`Query`](crate::Query) helpers decode requested final bindings
+//! into owned tuples and can keep terms connected across sequential or nested
+//! calls.
 //!
 //! A [`Record`](crate::Record) may appear anywhere in a serialized or
 //! deserialized value: serializing recalls the recorded term into place, and
@@ -43,8 +44,7 @@ mod record_token;
 mod ser;
 
 pub use args::{
-    input, input_as, output, Args, ArgsSpec, ArgsValues, CallError, Input, InputAs, LogicVar,
-    Output,
+    input, input_as, output, Args, ArgsSpec, CallError, Input, InputAs, Output, TermArg,
 };
 pub use de::{from_term, from_terms};
 pub use ser::{to_term, to_terms};

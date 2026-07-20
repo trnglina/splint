@@ -10,7 +10,7 @@ use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
 #[cfg(feature = "serde")]
-use crate::serde::args::{decode_args, Args, ArgsValues, CallError};
+use crate::serde::args::{decode_args, Args, ArgsSpec, CallError};
 use crate::term::{FliContext, Sealed, TermList};
 use crate::ScopedCallError;
 
@@ -278,15 +278,15 @@ impl<'c> Query<'c> {
     /// # Ok(()) }
     /// ```
     #[cfg(feature = "serde")]
-    pub fn once_with<C, Values>(
+    pub fn once_with<C, S>(
         ctx: &'c C,
         predicate: &Predicate,
-        args: Args<'c, Values>,
+        args: Args<'c, S>,
         options: QueryOptions,
-    ) -> Result<Option<Values>, CallError>
+    ) -> Result<Option<S::Values>, CallError>
     where
         C: FliContext + ?Sized,
-        Values: ArgsValues,
+        S: ArgsSpec,
     {
         Query::try_once_with(ctx, predicate, args, options, |_, values| Ok(values))
     }
@@ -295,23 +295,23 @@ impl<'c> Query<'c> {
     /// the successful solution is still current.
     ///
     /// `body` receives the live query context, allowing another typed query
-    /// to be nested without losing shared [`LogicVar`](crate::LogicVar)
-    /// bindings.
+    /// to be nested without losing bindings shared through existing
+    /// [`Term`](crate::Term) values.
     #[cfg(feature = "serde")]
-    pub fn try_once_with<C, Values, R>(
+    pub fn try_once_with<C, S, R>(
         ctx: &'c C,
         predicate: &Predicate,
-        args: Args<'c, Values>,
+        args: Args<'c, S>,
         options: QueryOptions,
-        body: impl for<'a> FnOnce(&'a Query<'c>, Values) -> Result<R, CallError>,
+        body: impl for<'a> FnOnce(&'a Query<'c>, S::Values) -> Result<R, CallError>,
     ) -> Result<Option<R>, CallError>
     where
         C: FliContext + ?Sized,
-        Values: ArgsValues,
+        S: ArgsSpec,
     {
         let terms = args.terms();
         Query::try_once(ctx, predicate, &terms, options, |query| {
-            let values = decode_args(query, &terms)?;
+            let values = decode_args::<_, S>(query, &terms)?;
             body(query, values)
         })
         .map_err(CallError::from_scoped)
@@ -320,15 +320,16 @@ impl<'c> Query<'c> {
     /// Enumerates a predicate's solutions, decoding the final argument
     /// bindings of each solution.
     #[cfg(feature = "serde")]
-    pub fn solutions_with<C, Values>(
+    pub fn solutions_with<C, S>(
         ctx: &'c C,
         predicate: &Predicate,
-        args: Args<'c, Values>,
+        args: Args<'c, S>,
         options: QueryOptions,
-    ) -> Result<CallSolutions<'c, Values>, CallError>
+    ) -> Result<CallSolutions<'c, S::Values>, CallError>
     where
         C: FliContext + ?Sized,
-        Values: ArgsValues + 'c,
+        S: ArgsSpec,
+        S::Values: 'c,
     {
         Query::try_solutions_with(ctx, predicate, args, options, |_, values| Ok(values))
     }
@@ -336,22 +337,23 @@ impl<'c> Query<'c> {
     /// Enumerates typed solutions and maps each one while its query context
     /// remains current, permitting safely nested typed calls.
     #[cfg(feature = "serde")]
-    pub fn try_solutions_with<C, Values, R, F>(
+    pub fn try_solutions_with<C, S, R, F>(
         ctx: &'c C,
         predicate: &Predicate,
-        args: Args<'c, Values>,
+        args: Args<'c, S>,
         options: QueryOptions,
         mut mapper: F,
     ) -> Result<CallSolutions<'c, R>, CallError>
     where
         C: FliContext + ?Sized,
-        Values: ArgsValues + 'c,
+        S: ArgsSpec,
+        S::Values: 'c,
         R: 'c,
-        F: for<'a> FnMut(&'a Query<'c>, Values) -> Result<R, CallError> + 'c,
+        F: for<'a> FnMut(&'a Query<'c>, S::Values) -> Result<R, CallError> + 'c,
     {
         let terms = args.terms();
         let inner = Query::try_solutions(ctx, predicate, &terms, options, move |query| {
-            let values = decode_args(query, &terms)?;
+            let values = decode_args::<_, S>(query, &terms)?;
             mapper(query, values)
         })
         .map_err(CallError::Query)?;

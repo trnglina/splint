@@ -237,8 +237,8 @@ pub use record::{Record, RecordError};
 pub use runtime::{InitError, Runtime};
 #[cfg(feature = "serde")]
 pub use serde::{
-    from_term, from_terms, input, input_as, output, to_term, to_terms, Args, ArgsSpec, ArgsValues,
-    CallError, Error as SerdeError, Input, InputAs, LogicVar, Output,
+    from_term, from_terms, input, input_as, output, to_term, to_terms, Args, ArgsSpec, CallError,
+    Error as SerdeError, Input, InputAs, Output, TermArg,
 };
 pub use term::{
     DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,

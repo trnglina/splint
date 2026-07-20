@@ -170,36 +170,15 @@ pub trait FliContext: Sealed {
     ///
     /// The specification is a tuple built from
     /// [`input`](crate::input), [`input_as`](crate::input_as),
-    /// [`output`](crate::output), and [`LogicVar`](crate::LogicVar) values.
-    /// The resulting block is consumed by the typed [`Query`](crate::Query)
-    /// helpers.
+    /// [`output`](crate::output), and existing [`Term`] values adapted with
+    /// [`Term::as_arg`]. The resulting block is consumed by the typed
+    /// [`Query`](crate::Query) helpers.
     #[cfg(feature = "serde")]
-    fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S::Values>, crate::CallError>
+    fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S>, crate::CallError>
     where
         S: crate::ArgsSpec,
     {
         crate::serde::args::prepare_args(self, spec)
-    }
-
-    /// Allocates a typed logical variable that can be shared across prepared
-    /// argument blocks.
-    ///
-    /// The variable cannot escape the allocating context:
-    ///
-    /// ```compile_fail
-    /// use splint::{FliContext, LogicVar};
-    ///
-    /// fn escape<'c, C: FliContext>(ctx: &'c C) -> LogicVar<'c, String> {
-    ///     ctx.with_frame(|frame| frame.logic_var::<String>().unwrap())
-    ///         .unwrap()
-    /// }
-    /// ```
-    #[cfg(feature = "serde")]
-    fn logic_var<T>(&self) -> Result<crate::LogicVar<'_, T>, crate::CallError>
-    where
-        T: ::serde::de::DeserializeOwned,
-    {
-        crate::serde::args::logic_var(self)
     }
 
     /// Opens a nested foreign frame borrowing `self`.
@@ -510,6 +489,19 @@ impl<'f> TermList<'f> {
 }
 
 impl<'f> Term<'f> {
+    /// Uses this existing term in a typed predicate call and decodes its
+    /// final binding as `T`.
+    ///
+    /// Copies of a `Term` alias the same Prolog term reference, so the term
+    /// remains directly inspectable and can be reused across argument blocks.
+    #[cfg(feature = "serde")]
+    pub fn as_arg<T>(self) -> crate::TermArg<'f, T>
+    where
+        T: ::serde::de::DeserializeOwned,
+    {
+        crate::serde::args::TermArg::new(self)
+    }
+
     /// Resets the term to a fresh unbound variable (`PL_put_variable`).
     pub fn put_variable(&self) -> Result<(), TermError> {
         scope::assert_gen(self.gen, "term");

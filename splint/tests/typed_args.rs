@@ -114,19 +114,21 @@ fn typed_calls_report_argument_query_and_result_errors() {
 }
 
 #[test]
-fn logic_vars_preserve_bindings_across_committed_calls() {
+fn terms_preserve_bindings_across_committed_calls() {
     with_frame(|frame| {
         let succ = predicate(frame, "succ", 2);
-        let middle = frame.logic_var::<i64>().unwrap();
+        let middle = frame.term().unwrap();
 
-        let first_args = frame.args((input(1_i64), middle)).unwrap();
+        let first_args = frame.args((input(1_i64), middle.as_arg::<i64>())).unwrap();
         assert_eq!(
             Query::once_with(frame, &succ, first_args, QueryOptions::default()).unwrap(),
             Some((1, 2))
         );
-        assert_eq!(middle.decode(frame).unwrap(), 2);
+        assert_eq!(middle.get_i64().unwrap(), 2);
 
-        let second_args = frame.args((middle, output::<i64>())).unwrap();
+        let second_args = frame
+            .args((middle.as_arg::<i64>(), output::<i64>()))
+            .unwrap();
         assert_eq!(
             Query::once_with(frame, &succ, second_args, QueryOptions::default()).unwrap(),
             Some((2, 3))
@@ -138,14 +140,16 @@ fn logic_vars_preserve_bindings_across_committed_calls() {
 fn typed_solution_iterators_decode_and_can_keep_a_binding() {
     with_frame(|frame| {
         let member = predicate(frame, "member", 2);
-        let value = frame.logic_var::<i64>().unwrap();
-        let args = frame.args((value, input(vec![1_i64, 2, 3]))).unwrap();
+        let value = frame.term().unwrap();
+        let args = frame
+            .args((value.as_arg::<i64>(), input(vec![1_i64, 2, 3])))
+            .unwrap();
         let mut solutions =
             Query::solutions_with(frame, &member, args, QueryOptions::default()).unwrap();
 
         assert_eq!(solutions.next().unwrap().unwrap(), (1, vec![1, 2, 3]));
         solutions.cut().unwrap();
-        assert_eq!(value.decode(frame).unwrap(), 1);
+        assert_eq!(value.get_i64().unwrap(), 1);
     });
 }
 
@@ -153,8 +157,8 @@ fn typed_solution_iterators_decode_and_can_keep_a_binding() {
 fn typed_once_callbacks_can_nest_a_call() {
     with_frame(|frame| {
         let succ = predicate(frame, "succ", 2);
-        let middle = frame.logic_var::<i64>().unwrap();
-        let outer_args = frame.args((input(1_i64), middle)).unwrap();
+        let middle = frame.term().unwrap();
+        let outer_args = frame.args((input(1_i64), middle.as_arg::<i64>())).unwrap();
 
         let nested = Query::try_once_with(
             frame,
@@ -163,7 +167,7 @@ fn typed_once_callbacks_can_nest_a_call() {
             QueryOptions::default(),
             |query, (_, current)| {
                 assert_eq!(current, 2);
-                let inner_args = query.args((middle, output::<i64>()))?;
+                let inner_args = query.args((middle.as_arg::<i64>(), output::<i64>()))?;
                 Query::once_with(query, &succ, inner_args, QueryOptions::default())
             },
         )
@@ -178,8 +182,10 @@ fn typed_solution_callbacks_can_nest_calls_for_each_solution() {
     with_frame(|frame| {
         let between = predicate(frame, "between", 3);
         let succ = predicate(frame, "succ", 2);
-        let value = frame.logic_var::<i64>().unwrap();
-        let outer_args = frame.args((input(1_i64), input(3_i64), value)).unwrap();
+        let value = frame.term().unwrap();
+        let outer_args = frame
+            .args((input(1_i64), input(3_i64), value.as_arg::<i64>()))
+            .unwrap();
 
         let results = Query::try_solutions_with(
             frame,
@@ -187,8 +193,8 @@ fn typed_solution_callbacks_can_nest_calls_for_each_solution() {
             outer_args,
             QueryOptions::default(),
             move |query, (_, _, current)| {
-                assert_eq!(value.decode(query)?, current);
-                let inner_args = query.args((value, output::<i64>()))?;
+                assert_eq!(value.get_i64().unwrap(), current);
+                let inner_args = query.args((value.as_arg::<i64>(), output::<i64>()))?;
                 Query::once_with(query, &succ, inner_args, QueryOptions::default())
             },
         )

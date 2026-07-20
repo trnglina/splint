@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use ::serde::de::DeserializeOwned;
 use ::serde::Serialize;
 
-use super::{from_term, from_terms, to_term, Error};
+use super::{from_term, to_term, Error};
 use crate::handles::HandleError;
 use crate::query::QueryError;
 use crate::term::{FliContext, Term, TermList};
@@ -49,14 +49,14 @@ impl CallError {
 /// A prepared, contiguous predicate argument block.
 ///
 /// Values of this type are created by [`FliContext::args`] and consumed by
-/// the typed [`Query`](crate::Query) helpers. The type parameter is the owned
-/// tuple decoded from a successful solution.
-pub struct Args<'f, Values> {
+/// the typed [`Query`](crate::Query) helpers. The type parameter records the
+/// argument specification, which determines the successful result tuple.
+pub struct Args<'f, Spec> {
     terms: TermList<'f>,
-    _values: PhantomData<fn() -> Values>,
+    _spec: PhantomData<fn() -> Spec>,
 }
 
-impl<'f, Values> Args<'f, Values> {
+impl<'f, Spec> Args<'f, Spec> {
     pub(crate) fn terms(&self) -> TermList<'f> {
         self.terms
     }
@@ -102,30 +102,29 @@ pub fn output<T>() -> Output<T> {
     }
 }
 
-/// A typed, reusable reference to a Prolog logical variable.
+/// Adapts an existing [`Term`] for a typed predicate call.
 ///
-/// Passing a copy to multiple calls aliases the same underlying Prolog term,
-/// preserving bindings and variable identity across those calls.
-pub struct LogicVar<'f, T> {
+/// The term is passed without modification and its final binding is decoded
+/// as `T`. Values of this type are created by [`Term::as_arg`].
+pub struct TermArg<'f, T> {
     term: Term<'f>,
     _value: PhantomData<fn() -> T>,
 }
 
-impl<T> Clone for LogicVar<'_, T> {
+impl<T> Clone for TermArg<'_, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for LogicVar<'_, T> {}
+impl<T> Copy for TermArg<'_, T> {}
 
-impl<'f, T> LogicVar<'f, T>
-where
-    T: DeserializeOwned,
-{
-    /// Decodes the variable's current binding into an owned Rust value.
-    pub fn decode<C: FliContext + ?Sized>(&self, ctx: &C) -> Result<T, CallError> {
-        from_term(ctx, self.term).map_err(CallError::ResultDecoding)
+impl<'f, T> TermArg<'f, T> {
+    pub(crate) fn new(term: Term<'f>) -> Self {
+        Self {
+            term,
+            _value: PhantomData,
+        }
     }
 }
 
@@ -133,13 +132,17 @@ mod sealed {
     use super::*;
 
     pub trait Argument {
-        type Value: DeserializeOwned;
+        type Value;
 
         fn seed<Ctx: FliContext + ?Sized>(self, ctx: &Ctx, term: Term<'_>) -> Result<(), Error>;
+
+        fn decode<Ctx: FliContext + ?Sized>(
+            ctx: &Ctx,
+            term: Term<'_>,
+        ) -> Result<Self::Value, Error>;
     }
 
     pub trait Tuple {}
-    pub trait Values {}
 }
 
 impl<T> sealed::Argument for Input<T>
@@ -150,6 +153,10 @@ where
 
     fn seed<Ctx: FliContext + ?Sized>(self, ctx: &Ctx, term: Term<'_>) -> Result<(), Error> {
         to_term(ctx, term, &self.value)
+    }
+
+    fn decode<Ctx: FliContext + ?Sized>(ctx: &Ctx, term: Term<'_>) -> Result<Self::Value, Error> {
+        from_term(ctx, term)
     }
 }
 
@@ -163,6 +170,10 @@ where
     fn seed<Ctx: FliContext + ?Sized>(self, ctx: &Ctx, term: Term<'_>) -> Result<(), Error> {
         to_term(ctx, term, &self.value)
     }
+
+    fn decode<Ctx: FliContext + ?Sized>(ctx: &Ctx, term: Term<'_>) -> Result<Self::Value, Error> {
+        from_term(ctx, term)
+    }
 }
 
 impl<T> sealed::Argument for Output<T>
@@ -174,9 +185,13 @@ where
     fn seed<Ctx: FliContext + ?Sized>(self, _ctx: &Ctx, _term: Term<'_>) -> Result<(), Error> {
         Ok(())
     }
+
+    fn decode<Ctx: FliContext + ?Sized>(ctx: &Ctx, term: Term<'_>) -> Result<Self::Value, Error> {
+        from_term(ctx, term)
+    }
 }
 
-impl<T> sealed::Argument for LogicVar<'_, T>
+impl<T> sealed::Argument for TermArg<'_, T>
 where
     T: DeserializeOwned,
 {
@@ -186,35 +201,31 @@ where
         term.put_term(self.term)?;
         Ok(())
     }
+
+    fn decode<Ctx: FliContext + ?Sized>(ctx: &Ctx, term: Term<'_>) -> Result<Self::Value, Error> {
+        from_term(ctx, term)
+    }
 }
 
 /// A sealed tuple of typed predicate argument specifications.
 #[doc(hidden)]
 pub trait ArgsSpec: sealed::Tuple {
-    type Values: ArgsValues;
+    type Values;
 
     #[doc(hidden)]
     const LEN: usize;
 
     #[doc(hidden)]
     fn seed<Ctx: FliContext + ?Sized>(self, ctx: &Ctx, terms: &TermList<'_>) -> Result<(), Error>;
+
+    #[doc(hidden)]
+    fn decode<Ctx: FliContext + ?Sized>(
+        ctx: &Ctx,
+        terms: &TermList<'_>,
+    ) -> Result<Self::Values, Error>;
 }
 
 impl sealed::Tuple for () {}
-impl sealed::Values for () {}
-
-/// A sealed tuple that can be decoded from a prepared argument block.
-#[doc(hidden)]
-pub trait ArgsValues: sealed::Values + DeserializeOwned {
-    #[doc(hidden)]
-    fn decode<C: FliContext + ?Sized>(ctx: &C, terms: &TermList<'_>) -> Result<Self, Error>;
-}
-
-impl ArgsValues for () {
-    fn decode<C: FliContext + ?Sized>(_ctx: &C, _terms: &TermList<'_>) -> Result<Self, Error> {
-        Ok(())
-    }
-}
 
 impl ArgsSpec for () {
     type Values = ();
@@ -222,6 +233,13 @@ impl ArgsSpec for () {
     const LEN: usize = 0;
 
     fn seed<C: FliContext + ?Sized>(self, _ctx: &C, _terms: &TermList<'_>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn decode<C: FliContext + ?Sized>(
+        _ctx: &C,
+        _terms: &TermList<'_>,
+    ) -> Result<Self::Values, Error> {
         Ok(())
     }
 }
@@ -232,23 +250,6 @@ macro_rules! impl_args_spec {
         where
             $($name: sealed::Argument,)+
         {}
-
-        impl<$($name),+> sealed::Values for ($($name,)+)
-        where
-            $($name: DeserializeOwned,)+
-        {}
-
-        impl<$($name),+> ArgsValues for ($($name,)+)
-        where
-            $($name: DeserializeOwned,)+
-        {
-            fn decode<Ctx: FliContext + ?Sized>(
-                ctx: &Ctx,
-                terms: &TermList<'_>,
-            ) -> Result<Self, Error> {
-                from_terms(ctx, terms)
-            }
-        }
 
         impl<$($name),+> ArgsSpec for ($($name,)+)
         where
@@ -275,6 +276,22 @@ macro_rules! impl_args_spec {
                 )+
                 Ok(())
             }
+
+            fn decode<Ctx: FliContext + ?Sized>(
+                ctx: &Ctx,
+                terms: &TermList<'_>,
+            ) -> Result<Self::Values, Error> {
+                Ok((
+                    $(
+                        <$name as sealed::Argument>::decode(
+                            ctx,
+                            terms
+                                .get($index)
+                                .expect("splint: an argument tuple index must be in bounds"),
+                        )?,
+                    )+
+                ))
+            }
         }
     };
 }
@@ -296,7 +313,7 @@ impl_args_spec!(14; (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 
 impl_args_spec!(15; (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 7), (I, 8), (J, 9), (K, 10), (L, 11), (M, 12), (N, 13), (O, 14));
 impl_args_spec!(16; (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 7), (I, 8), (J, 9), (K, 10), (L, 11), (M, 12), (N, 13), (O, 14), (P, 15));
 
-pub(crate) fn prepare_args<C, S>(ctx: &C, spec: S) -> Result<Args<'_, S::Values>, CallError>
+pub(crate) fn prepare_args<C, S>(ctx: &C, spec: S) -> Result<Args<'_, S>, CallError>
 where
     C: FliContext + ?Sized,
     S: ArgsSpec,
@@ -308,31 +325,16 @@ where
     spec.seed(ctx, &terms).map_err(CallError::Arguments)?;
     Ok(Args {
         terms,
-        _values: PhantomData,
+        _spec: PhantomData,
     })
 }
 
-pub(crate) fn logic_var<C, T>(ctx: &C) -> Result<LogicVar<'_, T>, CallError>
+pub(crate) fn decode_args<C, S>(ctx: &C, terms: &TermList<'_>) -> Result<S::Values, CallError>
 where
     C: FliContext + ?Sized,
-    T: DeserializeOwned,
+    S: ArgsSpec,
 {
-    let term = ctx
-        .term()
-        .map_err(Error::from)
-        .map_err(CallError::Arguments)?;
-    Ok(LogicVar {
-        term,
-        _value: PhantomData,
-    })
-}
-
-pub(crate) fn decode_args<C, T>(ctx: &C, terms: &TermList<'_>) -> Result<T, CallError>
-where
-    C: FliContext + ?Sized,
-    T: ArgsValues,
-{
-    T::decode(ctx, terms).map_err(CallError::ResultDecoding)
+    S::decode(ctx, terms).map_err(CallError::ResultDecoding)
 }
 
 #[cfg(test)]
