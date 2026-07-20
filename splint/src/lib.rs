@@ -154,12 +154,29 @@
 //!   lock-protected recorded database. It carries no engine generation because
 //!   that store is engine-independent (like an [`Atom`], A2), and it borrows
 //!   the [`Runtime`] rather than any scope: it may outlive every frame, query,
-//!   and engine, but cannot outlive [`Runtime::cleanup`] (R4), which is what
-//!   makes the `PL_erase` in its `Drop` sound. It is [`Send`] (records are
-//!   portable across threads and engines) but not `Sync`. Producing a record
-//!   ([`Term::record`]) checks the source term's generation (C3); recalling it
-//!   ([`Record::recall`]) allocates the destination through an [`FliContext`],
-//!   which witnesses that an engine is current.
+//!   and engine. For records made by [`Record::of`]/[`Term::record`] — the
+//!   paths that tie `'rt` to a real `&Runtime` — the borrow also guarantees
+//!   the record is gone before [`Runtime::cleanup`] (R4). Deserialization
+//!   (S2) instead lets the caller choose `'rt` freely, so the borrow alone no
+//!   longer proves the runtime is live; RC2 is the dynamic backstop. A record
+//!   is [`Send`] (records are portable across threads and engines) but not
+//!   `Sync`. Producing one ([`Term::record`]) checks the source term's
+//!   generation (C3); recalling it ([`Record::recall`]) allocates the
+//!   destination through an [`FliContext`], which witnesses that an engine is
+//!   current.
+//! - **RC2** — Each successful [`Runtime::initialize`] mints a
+//!   process-unique *session* (like C1's attachment generations), and every
+//!   [`Record`] is stamped with the session it was made in. Erasing, cloning,
+//!   and recalling check the stamp against the current session: `Drop` checks
+//!   and erases under the runtime-state mutex (R2) — so a concurrent cleanup
+//!   cannot interleave — and silently skips a stale record, whose store
+//!   already died with its session; `Clone` likewise checks and duplicates
+//!   under the mutex, but panics on staleness; [`Record::recall`]/
+//!   [`Record::recall_into`] panic on staleness after a brief locked read,
+//!   with no lock held across `PL_recorded` — sound because the destination's
+//!   context sits on a borrow chain ending at the one live [`Runtime`]
+//!   (R1/R4), so no cleanup can run concurrently. Violations panic; they are
+//!   never UB.
 //!
 //! Dicts (see `term.rs`):
 //!
@@ -180,6 +197,14 @@
 //!   operations as direct use), so they add no scoping rules: the caller's
 //!   context must be the thread's innermost open scope (C2/C3), exactly as
 //!   for direct term allocation.
+//! - **S2** — A [`Record`] handle crosses the serde boundary only through a
+//!   same-thread, same-call thread-local handoff keyed by a private newtype
+//!   token; the value placed in the serde data model is a guard that always
+//!   errors. A forged token call finds the handoff empty and fails without
+//!   reaching FFI with a fabricated handle; foreign formats and serde's
+//!   internally buffered positions (untagged/internally-tagged enums,
+//!   flatten) fail the same clean way. A record minted by deserialization is
+//!   stamped with the session current under the deserializing context (RC2).
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
@@ -190,7 +215,11 @@
 //! leaked frame or query leaves its C-side scope open and its depth
 //! registered, so closing any outer scope afterwards panics (C2) rather
 //! than corrupting the stacks. A leaked [`Record`] merely leaves a copy in the
-//! recorded database until the runtime is cleaned up.
+//! recorded database until the runtime is cleaned up; likewise a panic
+//! unwinding through a custom visitor mid-deserialize can strand an unclaimed
+//! record in the S2 handoff, which leaks the same way — this crate does not
+//! attempt panic-safety there, matching its stance on leaked frames and
+//! engines.
 
 mod call;
 mod engine;

@@ -3,7 +3,7 @@ use ::serde::ser::{
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
 
-use super::Error;
+use super::{record_token, Error};
 use crate::handles::{Atom, Functor};
 use crate::term::{FliContext, Term, TermList};
 
@@ -206,10 +206,20 @@ impl<'x, 'f, C: FliContext + ?Sized> Serializer for TermSerializer<'x, 'f, C> {
         Ok(true)
     }
 
-    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<bool, Error>
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<bool, Error>
     where
         T: Serialize + ?Sized,
     {
+        if name == record_token::RECORD_TOKEN {
+            // The handle arrives through the thread-local handoff pushed by
+            // `Record::serialize`; the in-model `value` (a guard that always
+            // errors) is deliberately not serialized. An empty stack means
+            // the token name was forged by something other than `Record` —
+            // fail without reaching FFI (S2).
+            let raw = record_token::pop_outgoing().ok_or(Error::ForeignRecord)?;
+            crate::record::recall_raw_into(raw, self.term)?;
+            return Ok(true);
+        }
         value.serialize(TermSerializer {
             ctx: self.ctx,
             term: self.term,

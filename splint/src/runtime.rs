@@ -1,5 +1,6 @@
 use std::ffi::{CString, NulError};
 use std::os::raw::{c_char, c_int};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use crate::engine::CurrentEngine;
@@ -62,7 +63,97 @@ pub struct CleanupError {
 
 enum RuntimeState {
     Uninitialized,
-    Initialized,
+    Initialized { session: u64 },
+}
+
+/// Mints process-unique runtime sessions, one per successful `initialize`
+/// (mirroring `scope.rs`'s generation mint for engine attachments). A
+/// [`Record`](crate::Record)'s session stamp is how its dynamic checks tell
+/// "this handle's store is still the live one" from "this handle's store
+/// already died with an earlier session" — necessary because a record's
+/// `'rt` lifetime can be chosen freely by a `Deserialize` caller rather than
+/// tied to a real `&'rt Runtime` borrow (invariant RC2).
+static SESSION_MINT: AtomicU64 = AtomicU64::new(1);
+
+/// The current runtime session, if the runtime is initialized.
+///
+/// `None` is unreachable for callers holding an [`FliContext`](crate::FliContext)
+/// witness: a live engine keeps its [`Runtime`] borrowed and un-cleaned-up
+/// (R4), and at most one runtime exists (R1), so the state it stamped stays
+/// current for as long as the witness lives.
+pub(crate) fn current_session() -> Option<u64> {
+    let guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    match *guard {
+        RuntimeState::Initialized { session } => Some(session),
+        RuntimeState::Uninitialized => None,
+    }
+}
+
+/// Panics unless `session` is the current runtime session.
+///
+/// Used by [`Record::recall`](crate::Record::recall)/`recall_into`, which may
+/// release the lock before the `PL_recorded` call that follows: the recall
+/// destination sits on a borrow chain (frame/query → attached engine →
+/// [`Engine`](crate::Engine) → [`Runtime`], or
+/// [`CurrentEngine`] → [`Runtime`]) that statically prevents a concurrent
+/// `Runtime::cleanup(self)`, so a session that is current here stays current
+/// for the whole call.
+pub(crate) fn assert_session_current(session: u64, what: &str) {
+    assert!(
+        current_session() == Some(session),
+        "splint: {what} belongs to a runtime session that is no longer current",
+    );
+}
+
+/// Whether `session` is the current runtime session (a brief locked read).
+#[cfg(feature = "serde")]
+pub(crate) fn session_is_current(session: u64) -> bool {
+    current_session() == Some(session)
+}
+
+/// Erases the record `raw` if `session` is still current; otherwise a silent
+/// no-op — the record's store already died with its session (its memory was
+/// reclaimed by that session's cleanup), so there is nothing left to erase.
+///
+/// The lock is held across both the check and the `PL_erase`: a record being
+/// dropped carries no borrow that could statically exclude a concurrent
+/// [`Runtime::cleanup`], so the check-then-erase must be atomic against the
+/// cleanup path, which mutates the state under this same lock (R2).
+pub(crate) fn erase_record_if_current(raw: swipl_sys::record_t, session: u64) {
+    let guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    if matches!(*guard, RuntimeState::Initialized { session: current } if current == session) {
+        // SAFETY: `raw` is a live record handle whose erase obligation the
+        // caller holds; the session check under the held lock proves the
+        // recorded database that issued it is still the live one, and the
+        // lock keeps `PL_cleanup` from tearing it down mid-erase (RC2).
+        unsafe { swipl_sys::PL_erase(raw) };
+    }
+}
+
+/// Duplicates the record `raw`, panicking unless `session` is still current.
+///
+/// As for [`erase_record_if_current`], the lock is held across the check and
+/// the `PL_duplicate_record`, because cloning a record carries no borrow that
+/// could statically exclude a concurrent [`Runtime::cleanup`].
+pub(crate) fn duplicate_record_current(
+    raw: swipl_sys::record_t,
+    session: u64,
+) -> swipl_sys::record_t {
+    let guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(
+        matches!(*guard, RuntimeState::Initialized { session: current } if current == session),
+        "splint: record belongs to a runtime session that is no longer current",
+    );
+    // SAFETY: `raw` is a live record handle (Record invariant); the session
+    // check under the held lock proves its recorded database is still the
+    // live one, and the lock keeps `PL_cleanup` from racing the duplication
+    // (RC2). The returned copy carries its own erase obligation.
+    let duplicate = unsafe { swipl_sys::PL_duplicate_record(raw) };
+    assert!(
+        !duplicate.is_null(),
+        "splint: PL_duplicate_record reported failure for a live record"
+    );
+    duplicate
 }
 
 /// Serializes all `PL_initialise`/`PL_set_resource_db_mem`/`PL_cleanup`
@@ -181,7 +272,7 @@ impl Runtime {
         S: Into<Vec<u8>>,
     {
         let mut guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
-        if matches!(*guard, RuntimeState::Initialized) {
+        if matches!(*guard, RuntimeState::Initialized { .. }) {
             return Err(InitError::AlreadyInitialized);
         }
 
@@ -213,7 +304,8 @@ impl Runtime {
             return Err(InitError::InitialiseFailed);
         }
 
-        *guard = RuntimeState::Initialized;
+        let session = SESSION_MINT.fetch_add(1, Ordering::Relaxed);
+        *guard = RuntimeState::Initialized { session };
         Ok(Runtime { _private: () })
     }
 
@@ -237,7 +329,7 @@ impl Runtime {
     /// any particular result.
     pub fn cleanup(self, options: CleanupOptions) -> Result<(), CleanupError> {
         let mut guard = RUNTIME_STATE.lock().unwrap_or_else(PoisonError::into_inner);
-        debug_assert!(matches!(*guard, RuntimeState::Initialized));
+        debug_assert!(matches!(*guard, RuntimeState::Initialized { .. }));
 
         // SAFETY: `self` proves the runtime is initialized (R1); `PL_cleanup`
         // guards itself against concurrent and recursive calls.
