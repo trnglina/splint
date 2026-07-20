@@ -593,6 +593,50 @@ fn unclaimed_incoming_record_is_discarded_without_crashing() {
     });
 }
 
+/// Panics after the term deserializer has offered it a fresh record handle.
+struct PanicsAfterRecording;
+
+impl<'de> Deserialize<'de> for PanicsAfterRecording {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Panics;
+
+        impl<'de> serde::de::Visitor<'de> for Panics {
+            type Value = PanicsAfterRecording;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("always panics")
+            }
+
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                _deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                panic!("intentional visitor panic")
+            }
+        }
+
+        deserializer.deserialize_newtype_struct(RECORD_TOKEN, Panics)
+    }
+}
+
+#[test]
+fn incoming_record_handoff_is_removed_during_unwind() {
+    with_engine(|ctx| {
+        let frame = ctx.frame().unwrap();
+        let term = frame.term().unwrap();
+        term.put_i64(1).unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = from_term::<_, PanicsAfterRecording>(&frame, term);
+        }));
+        assert!(result.is_err());
+
+        // A stale handoff would let this foreign deserializer claim the
+        // record created above.
+        assert!(serde_json::from_str::<Record>("null").is_err());
+    });
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 #[allow(dead_code)] // only `is_err()` is asserted; the variant payloads are never read

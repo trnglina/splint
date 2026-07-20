@@ -41,12 +41,13 @@ pub(super) fn pop_outgoing() -> Option<record_t> {
     OUTGOING.with(|stack| stack.borrow_mut().pop())
 }
 
-fn push_outgoing(raw: record_t) {
+fn push_outgoing(raw: record_t) -> OutgoingGuard {
     OUTGOING.with(|stack| stack.borrow_mut().push(raw));
+    OutgoingGuard { raw }
 }
 
 /// Removes `raw` if the serializer never consumed it (a foreign format, or
-/// an error before the token branch ran).
+/// an error or panic before the token branch ran).
 fn remove_outgoing(raw: record_t) {
     OUTGOING.with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -56,18 +57,30 @@ fn remove_outgoing(raw: record_t) {
     });
 }
 
+/// Keeps an outgoing handoff confined to the `Record::serialize` call that
+/// created it, including when the serializer unwinds.
+struct OutgoingGuard {
+    raw: record_t,
+}
+
+impl Drop for OutgoingGuard {
+    fn drop(&mut self) {
+        remove_outgoing(self.raw);
+    }
+}
+
 /// Offers a freshly recorded handle to [`RecordVisitor`].
-pub(super) fn push_incoming(raw: record_t) {
+pub(super) fn push_incoming(raw: record_t) -> IncomingGuard {
     INCOMING.with(|stack| stack.borrow_mut().push(raw));
+    IncomingGuard { raw }
 }
 
 fn pop_incoming() -> Option<record_t> {
     INCOMING.with(|stack| stack.borrow_mut().pop())
 }
 
-/// Removes `raw` if the visitor never claimed it, reporting whether it was
-/// still there so the caller can erase the now-ownerless record.
-pub(super) fn take_incoming(raw: record_t) -> bool {
+/// Removes `raw` if the visitor never claimed it.
+fn take_incoming(raw: record_t) -> bool {
     INCOMING.with(|stack| {
         let mut stack = stack.borrow_mut();
         match stack.iter().position(|candidate| *candidate == raw) {
@@ -78,6 +91,20 @@ pub(super) fn take_incoming(raw: record_t) -> bool {
             None => false,
         }
     })
+}
+
+/// Owns an incoming record until `RecordVisitor` claims it. If the visitor
+/// errors or unwinds first, dropping this guard erases the record.
+pub(super) struct IncomingGuard {
+    raw: record_t,
+}
+
+impl Drop for IncomingGuard {
+    fn drop(&mut self) {
+        if take_incoming(self.raw) {
+            drop(Record::from_raw(self.raw));
+        }
+    }
 }
 
 /// The `value` argument passed under [`RECORD_TOKEN`]. Splint's own
@@ -97,11 +124,8 @@ impl Serialize for ForeignRecordGuard {
 
 impl Serialize for Record {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let raw = self.as_raw();
-        push_outgoing(raw);
-        let result = serializer.serialize_newtype_struct(RECORD_TOKEN, &ForeignRecordGuard);
-        remove_outgoing(raw);
-        result
+        let _handoff = push_outgoing(self.as_raw());
+        serializer.serialize_newtype_struct(RECORD_TOKEN, &ForeignRecordGuard)
     }
 }
 
@@ -135,4 +159,21 @@ impl<'de> Deserialize<'de> for Record {
 /// the token branch to the module's error type.
 pub(super) fn unit_deserializer() -> ::serde::de::value::UnitDeserializer<super::Error> {
     ().into_deserializer()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pop_outgoing, push_outgoing};
+
+    #[test]
+    fn outgoing_handoff_is_removed_during_unwind() {
+        let raw = std::ptr::dangling_mut();
+        let result = std::panic::catch_unwind(|| {
+            let _handoff = push_outgoing(raw);
+            panic!("intentional panic");
+        });
+
+        assert!(result.is_err());
+        assert!(pop_outgoing().is_none());
+    }
 }

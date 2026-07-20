@@ -277,15 +277,8 @@ impl<'x, 'de, 'f, C: FliContext + ?Sized> Deserializer<'de> for TermDeserializer
     {
         if name == record_token::RECORD_TOKEN {
             let raw = crate::record::record_raw(self.term)?;
-            record_token::push_incoming(raw);
-            let result = visitor.visit_newtype_struct(record_token::unit_deserializer());
-            if record_token::take_incoming(raw) {
-                // The visitor never claimed the handle (it errored, or the
-                // target type ignored the newtype payload); erase through the
-                // ordinary drop path.
-                drop(crate::Record::from_raw(raw));
-            }
-            return result;
+            let _handoff = record_token::push_incoming(raw);
+            return visitor.visit_newtype_struct(record_token::unit_deserializer());
         }
         visitor.visit_newtype_struct(TermDeserializer {
             ctx: self.ctx,

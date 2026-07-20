@@ -196,7 +196,9 @@
 //!   errors. A forged token call finds the handoff empty and fails without
 //!   reaching FFI with a fabricated handle; foreign formats and serde's
 //!   internally buffered positions (untagged/internally-tagged enums,
-//!   flatten) fail the same clean way.
+//!   flatten) fail the same clean way. Scope guards remove unconsumed
+//!   handoffs on errors and panics, so a raw handle can never leak into a
+//!   later serde call.
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
@@ -206,11 +208,7 @@
 //! life of the process. A leaked frame or query leaves its C-side scope open
 //! and its depth registered, so closing any outer scope afterwards panics
 //! (C2) rather than corrupting the stacks. A leaked [`Record`] merely leaves a
-//! copy in the recorded database for the life of the process; likewise a panic
-//! unwinding through a custom visitor mid-deserialize can strand an unclaimed
-//! record in the S2 handoff, which leaks the same way — this crate does not
-//! attempt panic-safety there, matching its stance on leaked frames and
-//! engines.
+//! copy in the recorded database for the life of the process.
 
 mod call;
 mod engine;
