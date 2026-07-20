@@ -6,11 +6,10 @@ use std::ptr;
 
 use swipl_sys::qid_t;
 
+use crate::args::{decode_args, Args, ArgsSpec, CallError};
 use crate::exception::{take_exception, take_pending_exception, PrologException};
 use crate::handles::Predicate;
 use crate::scope::{self, Activation};
-#[cfg(feature = "serde")]
-use crate::serde::args::{decode_args, Args, ArgsSpec, CallError};
 use crate::term::{FliContext, Sealed, TermList};
 use crate::ScopedCallError;
 
@@ -264,20 +263,21 @@ impl<'c> Query<'c> {
         })
     }
 
-    /// Runs a predicate once using a typed argument block and returns its
-    /// final argument bindings.
+    /// Runs a predicate once using a prepared argument block and returns its
+    /// requested final argument values.
     ///
     /// ```
-    /// use splint::{input, output, FliContext, Predicate, Query, QueryOptions};
+    /// use splint::{FliContext, Predicate, Query, QueryOptions};
     ///
     /// # fn call(frame: &splint::Frame<'_>) -> Result<(), splint::CallError> {
-    /// let succ = Predicate::from_name(frame, "succ", 2, None)?;
-    /// let args = frame.args((input(41_i64), output::<i64>()))?;
-    /// let result = Query::once_with(frame, &succ, args, QueryOptions::default())?;
-    /// assert_eq!(result, Some((41, 42)));
+    /// let nonvar = Predicate::from_name(frame, "nonvar", 1, None)?;
+    /// let value = frame.term().unwrap();
+    /// value.put_atom_text("hello").unwrap();
+    /// let args = frame.args((value,))?;
+    /// let result = Query::once_with(frame, &nonvar, args, QueryOptions::default())?;
+    /// assert_eq!(result, Some(((),)));
     /// # Ok(()) }
     /// ```
-    #[cfg(feature = "serde")]
     pub fn once_with<C, S>(
         ctx: &'c C,
         predicate: &Predicate,
@@ -291,13 +291,12 @@ impl<'c> Query<'c> {
         Query::try_once_with(ctx, predicate, args, options, |_, values| Ok(values))
     }
 
-    /// Runs a predicate once with typed arguments, then invokes `body` while
+    /// Runs a predicate once with prepared arguments, then invokes `body` while
     /// the successful solution is still current.
     ///
-    /// `body` receives the live query context, allowing another typed query
+    /// `body` receives the live query context, allowing another prepared query
     /// to be nested without losing bindings shared through existing
     /// [`Term`](crate::Term) values.
-    #[cfg(feature = "serde")]
     pub fn try_once_with<C, S, R>(
         ctx: &'c C,
         predicate: &Predicate,
@@ -317,9 +316,8 @@ impl<'c> Query<'c> {
         .map_err(CallError::from_scoped)
     }
 
-    /// Enumerates a predicate's solutions, decoding the final argument
-    /// bindings of each solution.
-    #[cfg(feature = "serde")]
+    /// Enumerates a predicate's solutions, reading each argument position
+    /// according to its specification.
     pub fn solutions_with<C, S>(
         ctx: &'c C,
         predicate: &Predicate,
@@ -334,9 +332,8 @@ impl<'c> Query<'c> {
         Query::try_solutions_with(ctx, predicate, args, options, |_, values| Ok(values))
     }
 
-    /// Enumerates typed solutions and maps each one while its query context
-    /// remains current, permitting safely nested typed calls.
-    #[cfg(feature = "serde")]
+    /// Enumerates prepared solutions and maps each one while its query context
+    /// remains current, permitting safely nested prepared calls.
     pub fn try_solutions_with<C, S, R, F>(
         ctx: &'c C,
         predicate: &Predicate,
@@ -617,13 +614,11 @@ impl<'c, R, E> Iterator for TrySolutions<'c, R, E> {
     }
 }
 
-/// An iterator over decoded typed predicate solutions.
-#[cfg(feature = "serde")]
+/// An iterator over prepared predicate solutions.
 pub struct CallSolutions<'c, R> {
     inner: TrySolutions<'c, R, CallError>,
 }
 
-#[cfg(feature = "serde")]
 impl<R> CallSolutions<'_, R> {
     /// Ends iteration, keeping the current solution's bindings.
     pub fn cut(self) -> Result<(), CallError> {
@@ -636,7 +631,6 @@ impl<R> CallSolutions<'_, R> {
     }
 }
 
-#[cfg(feature = "serde")]
 impl<'c, R> Iterator for CallSolutions<'c, R> {
     type Item = Result<R, CallError>;
 

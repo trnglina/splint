@@ -1,8 +1,8 @@
 use std::sync::LazyLock;
 
 use splint::{
-    input, input_as, output, CallError, Engine, EngineAttributes, FliContext, Predicate, Query,
-    QueryError, QueryOptions, Record, Runtime,
+    input, input_as, output, ArgumentError, CallError, Engine, EngineAttributes, FliContext,
+    Predicate, Query, QueryError, QueryOptions, Record, Runtime,
 };
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
@@ -87,7 +87,10 @@ fn typed_calls_report_argument_query_and_result_errors() {
             Ok(_) => panic!("None outside a dict should not encode"),
             Err(error) => error,
         };
-        assert!(matches!(argument_error, CallError::Arguments(_)));
+        assert!(matches!(
+            argument_error,
+            CallError::Arguments(ArgumentError::Serde(_))
+        ));
 
         let succ = predicate(frame, "succ", 2);
         let args = frame.args((input(1_i64),)).unwrap();
@@ -108,7 +111,7 @@ fn typed_calls_report_argument_query_and_result_errors() {
             .unwrap();
         assert!(matches!(
             Query::once_with(frame, &member, args, QueryOptions::default()),
-            Err(CallError::ResultDecoding(_))
+            Err(CallError::ResultDecoding(ArgumentError::Serde(_)))
         ));
     });
 }

@@ -166,20 +166,17 @@ pub trait FliContext: Sealed {
         })
     }
 
-    /// Allocates and prepares a typed predicate argument block.
+    /// Allocates and prepares a predicate argument block.
     ///
-    /// The specification is a tuple built from
-    /// [`input`](crate::input), [`input_as`](crate::input_as),
-    /// [`output`](crate::output), and existing [`Term`] values. A bare
-    /// `Term` is passed through without decoding; [`Term::as_arg`] opts into
-    /// decoding its final binding. The resulting block is consumed by the
-    /// typed [`Query`](crate::Query) helpers.
-    #[cfg(feature = "serde")]
+    /// The specification is a tuple of existing [`Term`] values. Each term
+    /// is passed through without decoding, and its position in a successful
+    /// result tuple is `()`. With the `serde` feature, value-converting input
+    /// and output specifications are also accepted.
     fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S>, crate::CallError>
     where
         S: crate::ArgsSpec,
     {
-        crate::serde::args::prepare_args(self, spec)
+        crate::args::prepare_args(self, spec)
     }
 
     /// Opens a nested foreign frame borrowing `self`.
@@ -490,7 +487,7 @@ impl<'f> TermList<'f> {
 }
 
 impl<'f> Term<'f> {
-    /// Uses this existing term in a typed predicate call and decodes its
+    /// Uses this existing term in a prepared predicate call and decodes its
     /// final binding as `T`.
     ///
     /// Copies of a `Term` alias the same Prolog term reference, so the term

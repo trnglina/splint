@@ -42,9 +42,7 @@ mod de;
 mod record_token;
 mod ser;
 
-pub use args::{
-    input, input_as, output, Args, ArgsSpec, CallError, Input, InputAs, Output, TermArg,
-};
+pub use args::{input, input_as, output, Input, InputAs, Output, TermArg};
 pub use de::{from_term, from_terms};
 pub use ser::{to_term, to_terms};
 

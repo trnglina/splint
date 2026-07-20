@@ -212,6 +212,7 @@
 //! (C2) rather than corrupting the stacks. A leaked [`Record`] merely leaves a
 //! copy in the recorded database for the life of the process.
 
+mod args;
 mod call;
 mod engine;
 mod exception;
@@ -224,21 +225,20 @@ mod scope;
 mod serde;
 mod term;
 
+pub use args::{Args, ArgsSpec, ArgumentError, CallError};
 pub use call::ScopedCallError;
 pub use engine::{
     AttachError, AttachedEngine, CurrentEngine, Engine, EngineAttributes, EngineCreateError,
 };
 pub use exception::PrologException;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
-#[cfg(feature = "serde")]
-pub use query::CallSolutions;
-pub use query::{Query, QueryError, QueryOptions, Solutions, TrySolutions};
+pub use query::{CallSolutions, Query, QueryError, QueryOptions, Solutions, TrySolutions};
 pub use record::{Record, RecordError};
 pub use runtime::{InitError, Runtime};
 #[cfg(feature = "serde")]
 pub use serde::{
-    from_term, from_terms, input, input_as, output, to_term, to_terms, Args, ArgsSpec, CallError,
-    Error as SerdeError, Input, InputAs, Output, TermArg,
+    from_term, from_terms, input, input_as, output, to_term, to_terms, Error as SerdeError, Input,
+    InputAs, Output, TermArg,
 };
 pub use term::{
     DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,
