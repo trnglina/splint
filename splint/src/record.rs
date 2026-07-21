@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use swipl_sys::record_t;
 
@@ -29,26 +30,39 @@ pub enum RecordError {
 /// switches, and may be recalled into any engine on any thread.
 ///
 /// A record is bound to no scope at all — it is a plain owned handle, erased
-/// on drop (invariant RC1). The runtime it belongs to lives for the rest of
-/// the process, so there is nothing for the record to dangle against and it
-/// needs neither a lifetime nor any dynamic liveness check. It carries no
-/// engine generation either, because its store is engine-independent (like
-/// [`Atom`](crate::Atom); invariant A2), and it is [`Send`] because
-/// SWI-Prolog records are portable across threads and engines. Recalling
-/// still goes through an [`FliContext`], which witnesses that an engine is
-/// current.
+/// when its last clone drops (invariant RC1). The runtime it belongs to lives
+/// for the rest of the process, so there is nothing for the record to dangle
+/// against and it needs neither a lifetime nor any dynamic liveness check. It
+/// carries no engine generation either, because its store is engine-independent
+/// (like [`Atom`](crate::Atom); invariant A2), and it is [`Send`] + [`Sync`]
+/// because SWI-Prolog records are portable across threads and engines and its
+/// only mutable state — the duplication count — is an atomic [`Arc`] refcount
+/// on the Rust side rather than SWI-Prolog's non-atomic `PL_duplicate_record`.
+/// Recalling still goes through an [`FliContext`], which witnesses that an
+/// engine is current.
 pub struct Record {
-    /// Invariant: a live record handle owned by this value, erased exactly
-    /// once (by `Drop`, unless leaked).
+    /// The one recorded copy, shared by all clones. Erased once, when the last
+    /// clone drops (`RawRecord`'s `Drop`).
+    inner: Arc<RawRecord>,
+}
+
+/// Sole owner of one `PL_erase` obligation, erased when the last [`Record`]
+/// clone sharing it drops.
+struct RawRecord {
+    /// Invariant: a live record handle, erased exactly once (by `Drop`, unless
+    /// leaked).
     raw: record_t,
 }
 
 // SAFETY (RC1): a `PL_record` handle refers to a global, lock-protected store
 // that is independent of any engine or thread; recalling and erasing it are
-// valid from any thread, so the handle may be moved across threads. It is
-// deliberately not `Sync`: `&Record` shared between threads is not needed and
-// would require reasoning about concurrent recalls of the same record.
-unsafe impl Send for Record {}
+// valid from any thread, so the handle may be moved across threads (`Send`).
+// Once wrapped here it is never mutated — duplication is the enclosing `Arc`'s
+// atomic refcount, not SWI-Prolog's non-atomic `PL_duplicate_record` — so a
+// shared `&RawRecord` only ever drives concurrent read-only recalls, which
+// copy into each caller's own engine stack and touch no shared state (`Sync`).
+unsafe impl Send for RawRecord {}
+unsafe impl Sync for RawRecord {}
 
 /// Records `term`, returning the raw handle carrying one erase obligation.
 ///
@@ -93,7 +107,9 @@ impl Record {
     /// Wraps a raw record handle. The caller transfers ownership of exactly
     /// one erase obligation to the returned value.
     pub(crate) fn from_raw(raw: record_t) -> Record {
-        Record { raw }
+        Record {
+            inner: Arc::new(RawRecord { raw }),
+        }
     }
 
     /// Recalls the recorded term into a fresh reference allocated from `ctx`
@@ -125,12 +141,12 @@ impl Record {
     ///
     /// Panics if `term` does not belong to the thread's current engine (C3).
     pub fn recall_into(&self, term: Term<'_>) -> Result<(), RecordError> {
-        recall_raw_into(self.raw, term)
+        recall_raw_into(self.inner.raw, term)
     }
 
     #[cfg(feature = "serde")]
     pub(crate) fn as_raw(&self) -> record_t {
-        self.raw
+        self.inner.raw
     }
 }
 
@@ -144,25 +160,22 @@ impl fmt::Debug for Record {
 
 impl Clone for Record {
     fn clone(&self) -> Self {
-        // SAFETY: `self.raw` is a live record handle (Record invariant), and
-        // the recorded database outlives every record because the runtime is
-        // never torn down. The copy carries its own erase obligation, which
-        // the returned value takes on.
-        let duplicate = unsafe { swipl_sys::PL_duplicate_record(self.raw) };
-        assert!(
-            !duplicate.is_null(),
-            "splint: PL_duplicate_record reported failure for a live record"
-        );
-        Record::from_raw(duplicate)
+        // Clones share the one recorded copy through the `Arc`'s atomic
+        // refcount; SWI-Prolog's non-atomic `PL_duplicate_record` is not used,
+        // so the copy is erased exactly once when the last clone drops.
+        Record {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
-impl Drop for Record {
+impl Drop for RawRecord {
     fn drop(&mut self) {
-        // SAFETY: `self.raw` is a live record handle whose erase obligation
-        // this value holds (Record invariant), and the recorded database that
-        // issued it outlives every record because the runtime is never torn
-        // down (RC1).
+        // SAFETY: `self.raw` is a live record handle whose sole erase
+        // obligation this value holds (`RawRecord` invariant), reached only
+        // when the last `Record` clone sharing it drops. The recorded database
+        // that issued it outlives every record because the runtime is never
+        // torn down (RC1).
         unsafe { swipl_sys::PL_erase(self.raw) };
     }
 }

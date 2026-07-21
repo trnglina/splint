@@ -166,14 +166,17 @@
 //! Records (see `record.rs`):
 //!
 //! - **RC1** — A [`Record`] is a copy of a term in SWI-Prolog's global,
-//!   lock-protected recorded database. It is a plain owned handle, erased
-//!   exactly once on drop, and carries neither a lifetime nor an engine
-//!   generation: its store is engine-independent (like an [`Atom`], A2) and
-//!   outlives every record, because the runtime is never torn down (R1). A
-//!   record may therefore outlive every frame, query, and engine, and be
-//!   minted with no `&Runtime` in scope at all — which is what lets
-//!   deserialization (S2) produce one. It is [`Send`] (records are portable
-//!   across threads and engines) but not `Sync`. Producing one
+//!   lock-protected recorded database. It is a plain owned handle sharing one
+//!   recorded copy across its clones through an atomic [`Arc`](std::sync::Arc)
+//!   refcount (not SWI-Prolog's non-atomic `PL_duplicate_record`), erased
+//!   exactly once when the last clone drops, and carries neither a lifetime nor
+//!   an engine generation: its store is engine-independent (like an [`Atom`],
+//!   A2) and outlives every record, because the runtime is never torn down
+//!   (R1). A record may therefore outlive every frame, query, and engine, and
+//!   be minted with no `&Runtime` in scope at all — which is what lets
+//!   deserialization (S2) produce one. It is [`Send`] + [`Sync`]: records are
+//!   portable across threads and engines, and recalls only read the immutable
+//!   recorded copy into each caller's own engine stack. Producing one
 //!   ([`Term::record`]) checks the source term's generation (C3); recalling it
 //!   ([`Record::recall`]) allocates the destination through an
 //!   [`FliContext`], which witnesses that an engine is current.
