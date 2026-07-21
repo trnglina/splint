@@ -25,16 +25,6 @@
           extensions = [ "rust-src" ];
         };
 
-        swi-prolog-deps = [
-          pkgs.gperftools
-          pkgs.libedit
-          pkgs.ncurses
-          pkgs.libxcrypt
-          pkgs.openssl
-          pkgs.pcre2
-          pkgs.zlib
-        ];
-
         swi-prolog = pkgs.stdenv.mkDerivation {
           name = "swi-prolog";
 
@@ -63,7 +53,17 @@
             pkgs.libicns
           ];
 
-          buildInputs = swi-prolog-deps;
+          buildInputs = [
+            pkgs.gperftools
+            pkgs.libedit
+            pkgs.pcre2
+            pkgs.zlib
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.libxcrypt
+            pkgs.openssl
+            pkgs.ncurses
+          ];
 
           hardeningDisable = [ "format" ];
 
@@ -71,7 +71,6 @@
             "-DINSTALL_DOCUMENTATION=OFF"
             "-DINSTALL_QLF=ON"
             "-DINSTALL_TESTS=OFF"
-
             "-DSWIPL_INSTALL_IN_LIB=ON"
           ];
         };
@@ -86,8 +85,7 @@
           buildInputs = [
             rust
             swi-prolog
-          ]
-          ++ swi-prolog-deps;
+          ];
         };
       }
     );
