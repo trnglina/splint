@@ -4,7 +4,7 @@
 /// [`AttachError`](crate::AttachError), [`FrameError`](crate::FrameError), or
 /// [`QueryError`](crate::QueryError)); `Body` is the error returned by the
 /// user closure.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ScopedCallError<Operation, Body> {
     /// Opening, advancing, or finalizing the managed resource failed.
     #[error("managed operation failed: {0}")]

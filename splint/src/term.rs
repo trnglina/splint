@@ -26,7 +26,7 @@ mod dict;
 pub use dict::DictKey;
 
 /// An error from a term operation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TermError {
     /// The term does not have the shape the operation requires. This is the
     /// normal, recoverable "wrong type" outcome of the `PL_get_*` family.
@@ -57,7 +57,7 @@ pub enum TermError {
 }
 
 /// An error from opening a foreign frame.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FrameError {
     #[error("PL_open_foreign_frame reported failure")]
     OpenFailed,
@@ -387,7 +387,7 @@ impl Drop for Frame<'_> {
 }
 
 /// The classification `PL_term_type` assigns to a term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TermKind {
     Variable,
     Atom,
@@ -406,7 +406,7 @@ pub enum TermKind {
 
 /// How [`Term::list_shape`] classifies a term's list spine (`PL_skip_list`),
 /// which walks the spine cycle-safely instead of following it blindly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListShape {
     /// A proper list ending in `[]`; `len` is the number of elements (`0` for
     /// the empty list itself).

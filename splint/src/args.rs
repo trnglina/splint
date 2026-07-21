@@ -6,7 +6,7 @@ use crate::term::{FliContext, Term, TermError, TermList};
 use crate::ScopedCallError;
 
 /// An error from preparing or reading a predicate argument.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArgumentError {
     /// A term allocation or copy failed.
     #[error(transparent)]
@@ -18,7 +18,7 @@ pub enum ArgumentError {
 }
 
 /// An error from preparing arguments or executing a prepared predicate call.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CallError {
     /// Resolving a predicate or another global handle failed.
     #[error(transparent)]

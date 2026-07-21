@@ -10,7 +10,7 @@ use crate::exception::{take_pending_exception, PrologException};
 use crate::term::FliContext;
 
 /// An error from constructing a handle.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HandleError {
     #[error("PL_new_functor_sz reported failure")]
     FunctorConstruction,

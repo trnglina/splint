@@ -51,7 +51,7 @@ use crate::record::RecordError;
 use crate::term::{TermError, TermKind};
 
 /// The error type for serialization to and deserialization from terms.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// A message produced by a `Serialize`/`Deserialize` implementation
     /// (`::serde::ser::Error::custom` / `::serde::de::Error::custom`).

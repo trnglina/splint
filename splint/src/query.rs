@@ -19,7 +19,7 @@ use crate::ScopedCallError;
 /// solutions and surface caught exceptions as [`QueryError::Exception`].
 /// Create this non-exhaustive options value with [`QueryOptions::default`]
 /// and then set the desired public fields.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct QueryOptions {
     /// Run the goal with the debugger disabled (`PL_Q_NODEBUG`).
@@ -37,7 +37,7 @@ impl QueryOptions {
 }
 
 /// An error from opening or running a query.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QueryError {
     /// The argument block's length does not match the predicate's arity.
     #[error("predicate of arity {expected} cannot be called with {actual} argument terms")]

@@ -10,7 +10,7 @@ use crate::ScopedCallError;
 
 /// Errors from creating an engine through [`Engine::new`] or
 /// [`Runtime::engine`].
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EngineCreateError {
     /// Engine creation or thread attachment failed, e.g. because of resource
     /// limits.
@@ -23,7 +23,7 @@ pub enum EngineCreateError {
 
 /// Errors from attaching an engine through the [`Engine::with_attached`]
 /// helper family.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AttachError {
     /// The engine handle was rejected by SWI-Prolog (`PL_ENGINE_INVAL`).
     #[error("the engine no longer exists")]
@@ -54,7 +54,7 @@ pub enum AttachError {
 /// are not exposed yet: wrapping them safely (string lifetimes, callback ABI)
 /// is future work. Create this non-exhaustive options value with
 /// [`EngineAttributes::default`] and then set the desired public fields.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct EngineAttributes {
     /// Total stack limit in bytes (`stack_limit`). `None` uses the default.

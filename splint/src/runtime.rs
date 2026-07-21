@@ -5,7 +5,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::engine::{CurrentEngine, EngineCreateError};
 
 /// Errors from [`Runtime::initialize`] and [`Runtime::initialize_from_state`].
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InitError {
     /// A [`Runtime`] already exists in this process.
     #[error("the SWI-Prolog runtime is already initialized in this process")]

@@ -20,7 +20,7 @@ use swipl_sys::term_t;
 /// [`String`]: the raw exception term dies with the scope that raised it, and
 /// carrying a `PL_record` instead would tie every error type to the runtime's
 /// lifetime. Structured exception inspection is future work.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct PrologException(pub String);
 

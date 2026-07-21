@@ -7,7 +7,7 @@ use crate::exception::{take_pending_exception, PrologException};
 use crate::term::{FliContext, Term, TermError};
 
 /// An error from recording or recalling a term.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecordError {
     /// `PL_record`/`PL_recorded` reported failure with no pending exception —
     /// a resource exhaustion the C API signalled only through its return
