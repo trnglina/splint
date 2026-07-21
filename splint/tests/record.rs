@@ -103,6 +103,48 @@ fn record_is_debug_printable() {
 }
 
 #[test]
+fn record_clones_recall_and_drop_concurrently() {
+    // Clones share one recorded copy through an atomic refcount, so many
+    // threads may recall through their own clone and then drop it at once —
+    // the copy is erased exactly once, when the last clone drops. (Before the
+    // Arc, clone/drop raced on SWI-Prolog's non-atomic refcount: UB.)
+    let record: Record = with_frame(|frame| {
+        let term = frame.term().unwrap();
+        term.put_term_from_text("concurrent(copy)").unwrap();
+        term.record().unwrap()
+    });
+
+    std::thread::scope(|scope| {
+        for _ in 0..16 {
+            let clone = record.clone();
+            scope.spawn(move || {
+                let mut engine =
+                    Engine::new(&RT, EngineAttributes::default()).expect("engine create failed");
+                engine
+                    .with_attached(|ctx| {
+                        ctx.with_frame(|frame| {
+                            let recalled = clone.recall(frame).unwrap();
+                            assert_eq!(recalled.write_to_string().unwrap(), "concurrent(copy)");
+                        })
+                        .unwrap();
+                    })
+                    .expect("attach failed");
+                // `clone` is dropped here, on this thread, concurrently with
+                // every other thread's clone and the original below.
+            });
+        }
+        // The original drops when the scope ends, racing the last clones.
+    });
+
+    // The shared copy survived every clone's drop but the last: recall the
+    // original one final time.
+    with_frame(|frame| {
+        let recalled = record.recall(frame).unwrap();
+        assert_eq!(recalled.write_to_string().unwrap(), "concurrent(copy)");
+    });
+}
+
+#[test]
 fn record_moves_across_threads_and_recalls() {
     let record: Record = with_frame(|frame| {
         let term = frame.term().unwrap();

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use splint::{
     Atom, DictKey, Engine, EngineAttributes, FliContext, Functor, HandleError, Module, Predicate,
-    Runtime,
+    Record, Runtime,
 };
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
@@ -70,6 +70,7 @@ fn global_handles_are_send_and_sync() {
     assert_send_sync::<Module>();
     assert_send_sync::<Predicate>();
     assert_send_sync::<DictKey>();
+    assert_send_sync::<Record>();
 }
 
 #[test]
