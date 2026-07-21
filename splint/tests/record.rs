@@ -92,6 +92,63 @@ fn record_drops_without_an_engine_attached() {
 }
 
 #[test]
+fn record_identity_tracks_clones_not_value() {
+    let (a, b) = with_frame(|frame| {
+        let make = || {
+            let term = frame.term().unwrap();
+            term.put_term_from_text("same(term)").unwrap();
+            term.record().unwrap()
+        };
+        // Two independent recordings of an identical term.
+        (make(), make())
+    });
+
+    // A clone shares identity with its source...
+    let a_clone = a.clone();
+    assert!(a.ptr_eq(&a_clone));
+
+    // ...but independent recordings of the same term are distinct identities.
+    assert!(!a.ptr_eq(&b));
+}
+
+#[test]
+fn record_identity_backs_an_external_hash_impl() {
+    use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
+
+    // The pattern an external crate uses: wrap `Record` and delegate the three
+    // traits to its identity token.
+    struct ByIdentity(Record);
+    impl PartialEq for ByIdentity {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.ptr_eq(&other.0)
+        }
+    }
+    impl Eq for ByIdentity {}
+    impl Hash for ByIdentity {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.ptr_hash(state);
+        }
+    }
+
+    let (a, b) = with_frame(|frame| {
+        let make = || {
+            let term = frame.term().unwrap();
+            term.put_i64(1).unwrap();
+            term.record().unwrap()
+        };
+        (make(), make())
+    });
+
+    let mut set = HashSet::new();
+    set.insert(ByIdentity(a.clone()));
+    // A clone of `a` is already present (same identity); `b` is not.
+    assert!(!set.insert(ByIdentity(a)));
+    assert!(set.insert(ByIdentity(b)));
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
 fn record_is_debug_printable() {
     let record: Record = with_frame(|frame| {
         let term = frame.term().unwrap();

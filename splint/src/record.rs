@@ -1,4 +1,5 @@
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use swipl_sys::record_t;
@@ -142,6 +143,47 @@ impl Record {
     /// Panics if `term` does not belong to the thread's current engine (C3).
     pub fn recall_into(&self, term: Term<'_>) -> Result<(), RecordError> {
         recall_raw_into(self.inner.raw, term)
+    }
+
+    /// Whether `self` and `other` are clones of one recorded copy, mirroring
+    /// [`Arc::ptr_eq`](std::sync::Arc::ptr_eq).
+    ///
+    /// This is *identity*, not term equality: [`Record::clone`] preserves it,
+    /// while two independent recordings of the same term
+    /// ([`Term::record`](crate::Term::record)) are **not** `ptr_eq`. Comparing
+    /// recorded terms by value requires recalling them into an engine.
+    ///
+    /// Together with [`Record::ptr_hash`], this is the primitive for giving a
+    /// wrapper around [`Record`] identity-based `PartialEq`/`Eq`/`Hash`:
+    ///
+    /// ```
+    /// # use splint::Record;
+    /// # use std::hash::{Hash, Hasher};
+    /// struct ByIdentity(Record);
+    ///
+    /// impl PartialEq for ByIdentity {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         self.0.ptr_eq(&other.0)
+    ///     }
+    /// }
+    /// impl Eq for ByIdentity {}
+    /// impl Hash for ByIdentity {
+    ///     fn hash<H: Hasher>(&self, state: &mut H) {
+    ///         self.0.ptr_hash(state);
+    ///     }
+    /// }
+    /// ```
+    pub fn ptr_eq(&self, other: &Record) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Feeds this record's identity to `state`, consistent with
+    /// [`Record::ptr_eq`]: two records that are `ptr_eq` hash the same.
+    ///
+    /// Use it to implement `Hash` on a wrapper around [`Record`] keyed by
+    /// identity — see [`Record::ptr_eq`] for the full pattern.
+    pub fn ptr_hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.inner).hash(state);
     }
 
     #[cfg(feature = "serde")]
