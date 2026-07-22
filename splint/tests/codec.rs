@@ -142,7 +142,7 @@ fn record_fields_round_trip_after_the_source_frame_closes() {
     });
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, PartialEq)]
 struct RuntimeOnly;
 
 #[derive(ToTerm, FromTerm)]
@@ -411,6 +411,157 @@ fn tagged_enums_round_trip_without_buffering_payloads() {
         assert_eq!(
             round_trip(frame, &Event::Named { value: 8 }),
             Event::Named { value: 8 }
+        );
+    });
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+#[splint(rename_all = "snake_case")]
+struct VariantDetails {
+    detail_value: i64,
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+#[splint(rename_all = "snake_case")]
+enum ExternalFieldAttrs {
+    Payload {
+        #[splint(rename = "wireValue")]
+        renamed: i64,
+        #[splint(skip)]
+        runtime_only: RuntimeOnly,
+        #[splint(skip_to_term, default)]
+        decode_only: i64,
+        #[splint(skip_from_term)]
+        encode_only: i64,
+        #[splint(flatten)]
+        details: VariantDetails,
+        #[splint(default = "default_priority")]
+        priority: i64,
+    },
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+#[splint(tag = "kind", rename_all = "snake_case")]
+enum InternalFieldAttrs {
+    Payload {
+        #[splint(rename = "wireValue")]
+        renamed: i64,
+        #[splint(skip)]
+        runtime_only: RuntimeOnly,
+        #[splint(skip_to_term, default)]
+        decode_only: i64,
+        #[splint(skip_from_term)]
+        encode_only: i64,
+        #[splint(flatten)]
+        details: VariantDetails,
+        #[splint(default = "default_priority")]
+        priority: i64,
+    },
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+#[splint(tag = "kind", content = "data", rename_all = "snake_case")]
+enum AdjacentFieldAttrs {
+    Payload {
+        #[splint(rename = "wireValue")]
+        renamed: i64,
+        #[splint(skip)]
+        runtime_only: RuntimeOnly,
+        #[splint(skip_to_term, default)]
+        decode_only: i64,
+        #[splint(skip_from_term)]
+        encode_only: i64,
+        #[splint(flatten)]
+        details: VariantDetails,
+        #[splint(default = "default_priority")]
+        priority: i64,
+    },
+}
+
+#[test]
+fn named_enum_variants_honor_field_attributes() {
+    with_frame(|frame| {
+        let external = ExternalFieldAttrs::Payload {
+            renamed: 1,
+            runtime_only: RuntimeOnly,
+            decode_only: 2,
+            encode_only: 3,
+            details: VariantDetails { detail_value: 4 },
+            priority: 5,
+        };
+        let external_term = frame.term().unwrap();
+        to_term(frame, external_term, &external).unwrap();
+        let external_text = external_term.write_to_string().unwrap();
+        assert!(external_text.contains("wireValue"));
+        assert!(external_text.contains("detail_value"));
+        assert!(!external_text.contains("runtime_only"));
+        assert!(!external_text.contains("decode_only"));
+        assert_eq!(
+            from_term::<_, ExternalFieldAttrs>(frame, external_term).unwrap(),
+            ExternalFieldAttrs::Payload {
+                renamed: 1,
+                runtime_only: RuntimeOnly,
+                decode_only: 0,
+                encode_only: 0,
+                details: VariantDetails { detail_value: 4 },
+                priority: 5,
+            }
+        );
+
+        let missing_default = frame.term().unwrap();
+        missing_default
+            .put_term_from_text("payload{wireValue: 6, decode_only: 7, detail_value: 8}")
+            .unwrap();
+        assert_eq!(
+            from_term::<_, ExternalFieldAttrs>(frame, missing_default).unwrap(),
+            ExternalFieldAttrs::Payload {
+                renamed: 6,
+                runtime_only: RuntimeOnly,
+                decode_only: 7,
+                encode_only: 0,
+                details: VariantDetails { detail_value: 8 },
+                priority: 11,
+            }
+        );
+
+        let internal = InternalFieldAttrs::Payload {
+            renamed: 9,
+            runtime_only: RuntimeOnly,
+            decode_only: 10,
+            encode_only: 12,
+            details: VariantDetails { detail_value: 13 },
+            priority: 14,
+        };
+        assert_eq!(
+            round_trip(frame, &internal),
+            InternalFieldAttrs::Payload {
+                renamed: 9,
+                runtime_only: RuntimeOnly,
+                decode_only: 0,
+                encode_only: 0,
+                details: VariantDetails { detail_value: 13 },
+                priority: 14,
+            }
+        );
+
+        let adjacent = AdjacentFieldAttrs::Payload {
+            renamed: 15,
+            runtime_only: RuntimeOnly,
+            decode_only: 16,
+            encode_only: 17,
+            details: VariantDetails { detail_value: 18 },
+            priority: 19,
+        };
+        assert_eq!(
+            round_trip(frame, &adjacent),
+            AdjacentFieldAttrs::Payload {
+                renamed: 15,
+                runtime_only: RuntimeOnly,
+                decode_only: 0,
+                encode_only: 0,
+                details: VariantDetails { detail_value: 18 },
+                priority: 19,
+            }
         );
     });
 }
