@@ -1,5 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::BTreeSet;
+use syn::visit::{self, Visit};
 use syn::{
     parse_macro_input, parse_quote, Attribute, Data, DataEnum, DataStruct, DeriveInput, Fields,
     Generics, LitStr, Path, Type,
@@ -116,11 +118,46 @@ fn crate_path(container: &Attrs) -> Path {
 }
 
 fn add_bound(mut generics: Generics, tys: &[Type], bound: proc_macro2::TokenStream) -> Generics {
-    let clause = generics.make_where_clause();
+    let declared: BTreeSet<_> = generics
+        .type_params()
+        .map(|param| param.ident.to_string())
+        .collect();
+    let mut collector = TypeParameterCollector {
+        declared: &declared,
+        used: BTreeSet::new(),
+    };
     for ty in tys {
-        clause.predicates.push(parse_quote!(#ty: #bound));
+        collector.visit_type(ty);
+    }
+    let identifiers: Vec<_> = generics
+        .type_params()
+        .filter(|param| collector.used.contains(&param.ident.to_string()))
+        .map(|param| param.ident.clone())
+        .collect();
+    let clause = generics.make_where_clause();
+    for ident in identifiers {
+        clause.predicates.push(parse_quote!(#ident: #bound));
     }
     generics
+}
+
+struct TypeParameterCollector<'a> {
+    declared: &'a BTreeSet<String>,
+    used: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for TypeParameterCollector<'_> {
+    fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+        if path.qself.is_none() {
+            if let Some(segment) = path.path.segments.first() {
+                let ident = segment.ident.to_string();
+                if self.declared.contains(&ident) {
+                    self.used.insert(ident);
+                }
+            }
+        }
+        visit::visit_type_path(self, path);
+    }
 }
 
 fn add_predicates(mut generics: Generics, predicates: Vec<proc_macro2::TokenStream>) -> Generics {
@@ -186,7 +223,8 @@ fn struct_to(
         .unwrap_or_else(|| ident.to_string());
     match &data.fields {
         Fields::Named(fields) => {
-            let mut bounds = Vec::new();
+            let mut tys = Vec::new();
+            let mut predicates = Vec::new();
             let mut writes = Vec::new();
             for field in &fields.named {
                 let name = field.ident.as_ref().unwrap();
@@ -196,17 +234,18 @@ fn struct_to(
                 }
                 let ty = field.ty.clone();
                 if a.flatten {
-                    bounds.push(quote!(#ty: #krate::codec::ToTermFields));
+                    predicates.push(quote!(#ty: #krate::codec::ToTermFields));
                     writes.push(quote! { __fields.extend(#krate::codec::ToTermFields::__to_fields(&self.#name, __ctx)?); });
                 } else {
-                    bounds.push(quote!(#ty: #krate::ToTerm));
+                    tys.push(ty);
                     let wire = a.rename.unwrap_or_else(|| {
                         rename(&name.to_string(), container.rename_all.as_deref())
                     });
                     writes.push(quote! { let __term=__ctx.term()?; if #krate::ToTerm::__to_field(&self.#name,__ctx,__term)? { __fields.push((#wire.to_owned(),__term)); } });
                 }
             }
-            let generics = add_predicates(input.generics.clone(), bounds);
+            let generics = add_bound(input.generics.clone(), &tys, quote!(#krate::ToTerm));
+            let generics = add_predicates(generics, predicates);
             let (ig, tg, wc) = generics.split_for_impl();
             Ok(quote! {
                 impl #ig #krate::codec::ToTermFields for #ident #tg #wc {
@@ -254,7 +293,8 @@ fn struct_from(
         .unwrap_or_else(|| ident.to_string());
     match &data.fields {
         Fields::Named(fields) => {
-            let mut bounds = Vec::new();
+            let mut tys = Vec::new();
+            let mut predicates = Vec::new();
             let mut reads = Vec::new();
             let mut names = Vec::new();
             for field in &fields.named {
@@ -267,10 +307,10 @@ fn struct_from(
                     continue;
                 }
                 if a.flatten {
-                    bounds.push(quote!(#ty: #krate::codec::FromTermFields));
+                    predicates.push(quote!(#ty: #krate::codec::FromTermFields));
                     reads.push(quote!{let #name=#krate::codec::FromTermFields::__from_fields(__ctx,__fields)?;});
                 } else {
-                    bounds.push(quote!(#ty: #krate::FromTerm));
+                    tys.push(ty.clone());
                     let wire = a.rename.unwrap_or_else(|| {
                         rename(&name.to_string(), container.rename_all.as_deref())
                     });
@@ -295,7 +335,8 @@ fn struct_from(
                     reads.push(quote! {let #name:#ty=#expr;});
                 }
             }
-            let generics = add_predicates(input.generics.clone(), bounds);
+            let generics = add_bound(input.generics.clone(), &tys, quote!(#krate::FromTerm));
+            let generics = add_predicates(generics, predicates);
             let (ig, tg, wc) = generics.split_for_impl();
             Ok(
                 quote! {impl #ig #krate::codec::FromTermFields for #ident #tg #wc{fn __from_fields<'a,__C:#krate::FliContext+?Sized>(__ctx:&'a __C,__fields:&mut ::std::collections::BTreeMap<String,#krate::Term<'a>>)->Result<Self,#krate::TermCodecError>{#(#reads)*Ok(Self{#(#names),*})}} impl #ig #krate::FromTerm for #ident #tg #wc{fn from_term<__C:#krate::FliContext+?Sized>(__ctx:&__C,__term:#krate::Term<'_>)->Result<Self,#krate::TermCodecError>{#krate::codec::require_dict_tag(__ctx,__term,#tag)?;let mut __fields=#krate::codec::dict_fields(__ctx,__term)?;#krate::codec::FromTermFields::__from_fields(__ctx,&mut __fields)}}},

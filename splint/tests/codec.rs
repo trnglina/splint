@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use serde::{Deserialize, Serialize};
 use splint::{
@@ -115,6 +115,13 @@ struct Config<T> {
     runtime_only: RuntimeOnly,
 }
 
+#[derive(ToTerm, FromTerm)]
+struct SkippedGeneric<T: Default> {
+    value: i64,
+    #[splint(skip)]
+    runtime_only: T,
+}
+
 #[derive(FromTerm)]
 #[splint(default)]
 struct Defaults {
@@ -137,9 +144,136 @@ fn derives_add_generic_bounds_and_skip_runtime_only_fields() {
         assert_eq!(decoded.generic_value, 5);
         let _ = decoded.runtime_only;
 
+        let skipped = SkippedGeneric::<RuntimeOnly> {
+            value: 6,
+            runtime_only: RuntimeOnly,
+        };
+        let term = frame.term().unwrap();
+        to_term(frame, term, &skipped).unwrap();
+        let decoded: SkippedGeneric<RuntimeOnly> = from_term(frame, term).unwrap();
+        assert_eq!(decoded.value, 6);
+        let _ = decoded.runtime_only;
+
         let empty = frame.term().unwrap();
         empty.put_term_from_text("'Defaults'{}").unwrap();
         assert_eq!(from_term::<_, Defaults>(frame, empty).unwrap().value, 0);
+    });
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+struct RecursiveNode {
+    value: i64,
+    next: Option<Box<RecursiveNode>>,
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+struct Tree<T> {
+    value: T,
+    children: Vec<Tree<T>>,
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+struct BoxedTree<T> {
+    value: T,
+    children: Vec<Box<BoxedTree<T>>>,
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+struct SharedTree {
+    value: i64,
+    children: Vec<Arc<SharedTree>>,
+}
+
+#[test]
+fn recursive_structs_round_trip_through_option_vec_box_and_arc() {
+    with_frame(|frame| {
+        let node = RecursiveNode {
+            value: 1,
+            next: Some(Box::new(RecursiveNode {
+                value: 2,
+                next: None,
+            })),
+        };
+        assert_eq!(round_trip(frame, &node), node);
+
+        let tree = Tree {
+            value: "root".to_owned(),
+            children: vec![
+                Tree {
+                    value: "first".to_owned(),
+                    children: Vec::new(),
+                },
+                Tree {
+                    value: "second".to_owned(),
+                    children: vec![Tree {
+                        value: "grandchild".to_owned(),
+                        children: Vec::new(),
+                    }],
+                },
+            ],
+        };
+        assert_eq!(round_trip(frame, &tree), tree);
+
+        let boxed = BoxedTree {
+            value: 1_i64,
+            children: vec![Box::new(BoxedTree {
+                value: 2,
+                children: vec![Box::new(BoxedTree {
+                    value: 3,
+                    children: Vec::new(),
+                })],
+            })],
+        };
+        assert_eq!(round_trip(frame, &boxed), boxed);
+
+        let shared = SharedTree {
+            value: 1,
+            children: vec![Arc::new(SharedTree {
+                value: 2,
+                children: Vec::new(),
+            })],
+        };
+        assert_eq!(round_trip(frame, &shared), shared);
+    });
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+enum Left {
+    End,
+    Rights(Vec<Right>),
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+enum Right {
+    End,
+    Lefts(Vec<Left>),
+}
+
+#[derive(ToTerm, FromTerm, Debug, PartialEq)]
+#[splint(tag = "kind")]
+enum TaggedTree {
+    Leaf { value: i64 },
+    Branch { children: Vec<TaggedTree> },
+}
+
+#[test]
+fn recursive_enums_and_mutually_recursive_vecs_round_trip() {
+    with_frame(|frame| {
+        let mutual = Left::Rights(vec![
+            Right::End,
+            Right::Lefts(vec![Left::End, Left::Rights(Vec::new())]),
+        ]);
+        assert_eq!(round_trip(frame, &mutual), mutual);
+
+        let tagged = TaggedTree::Branch {
+            children: vec![
+                TaggedTree::Leaf { value: 1 },
+                TaggedTree::Branch {
+                    children: vec![TaggedTree::Leaf { value: 2 }],
+                },
+            ],
+        };
+        assert_eq!(round_trip(frame, &tagged), tagged);
     });
 }
 

@@ -20,6 +20,12 @@
 //! `content = "..."`, `flatten`, `rename`, `rename_all`, `default`, and
 //! directional skip attributes are supported. Unlike Serde's generic data
 //! model, decoding always retains the original live subterm.
+//!
+//! Derived implementations support finite recursive values through indirection
+//! such as `Box`, `Vec`, and acyclic `Arc` values. Decoding creates fresh Rust
+//! allocations and does not preserve graph identity. Keep cyclic Prolog terms
+//! in an [`ExternalRecord`] rather than decoding them into a recursive Rust
+//! type.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, Hash};
