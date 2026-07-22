@@ -79,7 +79,7 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.pkg-config
-            pkgs.rustPlatform.bindgenHook
+            pkgs.rust-bindgen
           ];
 
           buildInputs = [

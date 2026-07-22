@@ -33,19 +33,6 @@ fn main() {
     println!("cargo:rerun-if-changed={}", header.display());
     println!("cargo:rustc-link-search=native={}", library_dir.display());
     println!("cargo:rustc-link-lib=dylib=swipl");
-
-    let bindings = bindgen::Builder::default()
-        .header(header.to_string_lossy())
-        .clang_arg(format!("-I{}", include_dir.display()))
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate_comments(false)
-        .layout_tests(false)
-        .generate()
-        .expect("unable to generate SWI-Prolog bindings");
-
-    bindings
-        .write_to_file(PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs"))
-        .expect("unable to write SWI-Prolog bindings");
 }
 
 fn parse_runtime_variables(output: &str) -> BTreeMap<&str, &str> {

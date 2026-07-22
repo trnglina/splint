@@ -1,6 +1,6 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+include!("bindings.rs");
 
 // Symbolic engine handles from SWI-Prolog.h. These are pointer-cast macros
 // (`#define PL_ENGINE_MAIN ((PL_engine_t)0x1)` etc.) that bindgen does not

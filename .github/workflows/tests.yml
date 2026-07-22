@@ -41,6 +41,9 @@ jobs:
       - name: Check formatting
         run: nix develop --command cargo fmt --all -- --check
 
+      - name: Check SWI-Prolog bindings
+        run: nix develop --command ./swipl-sys/generate-bindings.sh --check
+
       - name: Run Clippy
         run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
 
