@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, env, path::PathBuf, process::Command};
 
+const EXPECTED_PLVERSION: &str = "100002";
+
 fn main() {
     println!("cargo:rerun-if-env-changed=SWIPL");
 
@@ -19,6 +21,13 @@ fn main() {
 
     let runtime_variables = String::from_utf8_lossy(&output.stdout);
     let variables = parse_runtime_variables(&runtime_variables);
+    let plversion = variables
+        .get("PLVERSION")
+        .expect("SWI-Prolog did not report PLVERSION");
+    assert_eq!(
+        *plversion, EXPECTED_PLVERSION,
+        "SWI-Prolog PLVERSION mismatch: expected {EXPECTED_PLVERSION}, found {plversion}"
+    );
     let plbase = variables
         .get("PLBASE")
         .expect("SWI-Prolog did not report PLBASE");
