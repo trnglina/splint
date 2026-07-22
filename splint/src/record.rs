@@ -41,6 +41,10 @@ pub enum RecordError {
 /// on the Rust side rather than SWI-Prolog's non-atomic `PL_duplicate_record`.
 /// Recalling still goes through an [`FliContext`], which witnesses that an
 /// engine is current.
+///
+/// Its [`ToTerm`](crate::ToTerm)/[`FromTerm`](crate::FromTerm) implementations
+/// recall and record the ordinary Prolog term, so a record can be embedded
+/// losslessly in a derived Rust structure without exposing its opaque handle.
 pub struct Record {
     /// The one recorded copy, shared by all clones. Erased once, when the last
     /// clone drops (`RawRecord`'s `Drop`).

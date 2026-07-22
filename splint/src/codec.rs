@@ -31,7 +31,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 
-use crate::{Atom, ExternalRecord, FliContext, Functor, HandleError, RecordError, Term, TermError};
+use crate::{
+    Atom, ExternalRecord, FliContext, Functor, HandleError, Record, RecordError, Term, TermError,
+};
 
 /// An error converting a Rust value to or from a Prolog term.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -607,6 +609,17 @@ impl ToTerm for ExternalRecord {
 impl FromTerm for ExternalRecord {
     fn from_term<C: FliContext + ?Sized>(_: &C, term: Term<'_>) -> Result<Self, TermCodecError> {
         Ok(Self::from_term(term)?)
+    }
+}
+
+impl ToTerm for Record {
+    fn to_term<C: FliContext + ?Sized>(&self, _: &C, term: Term<'_>) -> Result<(), TermCodecError> {
+        Ok(self.recall_into(term)?)
+    }
+}
+impl FromTerm for Record {
+    fn from_term<C: FliContext + ?Sized>(_: &C, term: Term<'_>) -> Result<Self, TermCodecError> {
+        Ok(term.record()?)
     }
 }
 

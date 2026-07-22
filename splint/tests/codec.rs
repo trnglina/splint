@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock};
 use serde::{Deserialize, Serialize};
 use splint::{
     from_term, from_terms, to_term, to_terms, Engine, EngineAttributes, ExternalRecord, FliContext,
-    FromTerm, Predicate, Query, QueryOptions, Runtime, TermCodecError, TermKind, ToTerm,
+    FromTerm, Predicate, Query, QueryOptions, Record, Runtime, TermCodecError, TermKind, ToTerm,
 };
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
@@ -95,6 +95,45 @@ fn structs_flatten_and_capture_an_ordinary_term_losslessly() {
             })
             .unwrap();
         assert!(payload.write_to_string().unwrap().starts_with("foo("));
+        let first = payload.get_arg(frame, 0).unwrap();
+        let second = payload.get_arg(frame, 1).unwrap();
+        let nine = frame.term().unwrap();
+        nine.put_i64(9).unwrap();
+        assert!(first.unify(nine).unwrap());
+        assert_eq!(second.get_i64().unwrap(), 9, "variable sharing was lost");
+    });
+}
+
+#[derive(ToTerm, FromTerm)]
+struct RecordedEnvelope {
+    payload: Record,
+}
+
+#[test]
+fn record_fields_round_trip_after_the_source_frame_closes() {
+    let decoded: RecordedEnvelope = with_frame(|frame| {
+        let source = frame.term().unwrap();
+        source
+            .put_term_from_text("'RecordedEnvelope'{payload: kept(X, X)}")
+            .unwrap();
+        from_term(frame, source).unwrap()
+    });
+
+    with_frame(|frame| {
+        let dest = frame.term().unwrap();
+        to_term(frame, dest, &decoded).unwrap();
+
+        let payload = dest
+            .dict_entries(frame)
+            .unwrap()
+            .into_iter()
+            .find_map(|(key, value)| match key {
+                splint::DictKey::Atom(atom) if atom.text() == "payload" => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(payload.write_to_string().unwrap().starts_with("kept("));
+
         let first = payload.get_arg(frame, 0).unwrap();
         let second = payload.get_arg(frame, 1).unwrap();
         let nine = frame.term().unwrap();
