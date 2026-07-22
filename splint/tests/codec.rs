@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 
-use serde::{Deserialize, Serialize};
 use splint::{
     from_term, from_terms, to_term, to_terms, Engine, EngineAttributes, ExternalRecord, FliContext,
     FromTerm, Predicate, Query, QueryOptions, Record, Runtime, TermCodecError, TermKind, ToTerm,
@@ -413,27 +412,6 @@ fn tagged_enums_round_trip_without_buffering_payloads() {
             round_trip(frame, &Event::Named { value: 8 }),
             Event::Named { value: 8 }
         );
-    });
-}
-
-#[derive(ToTerm, FromTerm, Serialize, Deserialize)]
-struct Persisted {
-    payload: ExternalRecord,
-}
-
-#[test]
-fn serde_persists_bytes_while_splint_maps_the_ordinary_term() {
-    with_frame(|frame| {
-        let source = frame.term().unwrap();
-        source
-            .put_term_from_text("'Persisted'{payload: arbitrary(foo)}")
-            .unwrap();
-        let value: Persisted = from_term(frame, source).unwrap();
-        let json = serde_json::to_string(&value).unwrap();
-        let restored: Persisted = serde_json::from_str(&json).unwrap();
-        let dest = frame.term().unwrap();
-        to_term(frame, dest, &restored).unwrap();
-        assert!(dest.write_to_string().unwrap().contains("arbitrary(foo)"));
     });
 }
 

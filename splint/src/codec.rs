@@ -18,8 +18,8 @@
 //! tuple variants to compounds, sequences to proper lists, and maps to dicts.
 //! `#[splint(untagged)]`, `#[splint(tag = "...")]`, adjacent
 //! `content = "..."`, `flatten`, `rename`, `rename_all`, `default`, and
-//! directional skip attributes are supported. Unlike Serde's generic data
-//! model, decoding always retains the original live subterm.
+//! directional skip attributes are supported. Decoding always retains the
+//! original live subterm instead of passing through an intermediary data model.
 //!
 //! Derived implementations support finite recursive values through indirection
 //! such as `Box`, `Vec`, and acyclic `Arc` values. Decoding creates fresh Rust

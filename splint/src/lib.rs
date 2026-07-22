@@ -3,9 +3,8 @@
 //! This crate wraps the raw [`swipl_sys`] bindings in types whose ownership
 //! and borrowing rules encode SWI-Prolog's threading model, so that the safe
 //! surface cannot cause undefined behavior — with one explicit, accepted
-//! exception: [`ExternalRecord::from_bytes`] (and its optional Serde
-//! `Deserialize` impl) trusts the caller-supplied byte buffer's structure
-//! (XR2).
+//! exception: [`ExternalRecord::from_bytes`] trusts the caller-supplied byte
+//! buffer's structure (XR2).
 //! Currently covered: the process-global [`Runtime`], thread-movable
 //! [`Engine`]s, foreign [`Frame`]s, [`Term`] references, [`Query`] execution,
 //! dicts, and [`Record`]ed and [`ExternalRecord`]ed terms.
@@ -195,10 +194,9 @@
 //!   term, both still require an [`FliContext`] (unavoidable — both cross
 //!   FFI); [`ExternalRecord::from_bytes`] does not validate structurally,
 //!   since there is no safe way to do so without a live engine (XR2 covers
-//!   the resulting trust boundary). Because it is ordinary owned data end to
-//!   end, its optional Serde `Serialize`/`Deserialize` impls need no scope
-//!   invariant. Its [`ToTerm`]/[`FromTerm`] impls deliberately do cross FFI:
-//!   they map the bytes to and from the original ordinary Prolog term.
+//!   the resulting trust boundary). Its [`ToTerm`]/[`FromTerm`] impls
+//!   deliberately do cross FFI: they map the bytes to and from the original
+//!   ordinary Prolog term.
 //! - **XR2** — `PL_recorded_external` takes no length argument and performs
 //!   no bounds checking against the buffer it's given: it trusts the
 //!   buffer's own embedded op-codes and lengths, tracking only where the data
@@ -207,12 +205,11 @@
 //!   structurally plausible but truncated or otherwise corrupted buffers —
 //!   are not, and cause an out-of-bounds read. This is this crate's one
 //!   deliberate exception to "the safe surface cannot cause undefined
-//!   behavior": [`ExternalRecord::from_bytes`] and the `Deserialize` impl
-//!   built on it stay safe functions rather than `unsafe fn`, because
-//!   ergonomic, safe bytes-in/bytes-out is a design goal of
-//!   [`ExternalRecord`] and defending against an adversarial byte source is
-//!   out of scope for this crate. The caller's obligation: only pass bytes
-//!   that were themselves produced by [`ExternalRecord::as_bytes`]/
+//!   behavior": [`ExternalRecord::from_bytes`] stays a safe function rather
+//!   than an `unsafe fn`, because ergonomic, safe bytes-in/bytes-out is a
+//!   design goal of [`ExternalRecord`] and defending against an adversarial
+//!   byte source is out of scope for this crate. The caller's obligation: only
+//!   pass bytes that were themselves produced by [`ExternalRecord::as_bytes`]/
 //!   [`ExternalRecord::from_term`], directly or via a trusted round-trip
 //!   (e.g. writing them to and reading them back from disk) — never bytes
 //!   from an untrusted or adversarial source.
@@ -260,8 +257,6 @@ mod query;
 mod record;
 mod runtime;
 mod scope;
-#[cfg(feature = "serde")]
-mod serde;
 mod term;
 
 pub use args::{Args, ArgsSpec, ArgumentError, CallError};

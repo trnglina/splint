@@ -15,11 +15,9 @@ use crate::term::{FliContext, Term};
 /// from a term, and recalling one back into a term, both still require an
 /// [`FliContext`] — both cross FFI.
 ///
-/// With the `serde` feature, Serde treats this value as its raw byte string so
-/// it can be persisted by any Serde format. Splint's independent
-/// [`ToTerm`](crate::ToTerm)/[`FromTerm`](crate::FromTerm) mapping instead
-/// recalls or records the ordinary Prolog term, allowing an opaque term to be
-/// embedded losslessly in a derived Rust structure.
+/// Its [`ToTerm`](crate::ToTerm)/[`FromTerm`](crate::FromTerm) mapping recalls
+/// or records the ordinary Prolog term, allowing an opaque term to be embedded
+/// losslessly in a derived Rust structure.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ExternalRecord {
     bytes: Box<[u8]>,
@@ -124,9 +122,7 @@ impl ExternalRecord {
     /// were themselves produced by [`ExternalRecord::as_bytes`]/
     /// [`from_term`](Self::from_term) (directly, or via a trusted round-trip
     /// such as writing them to and reading them back from disk) — never bytes
-    /// from an untrusted or adversarial source. The optional Serde
-    /// `Deserialize` impl inherits the same trust boundary, since it is built
-    /// on this constructor.
+    /// from an untrusted or adversarial source.
     pub fn from_bytes(bytes: impl Into<Box<[u8]>>) -> Self {
         ExternalRecord {
             bytes: bytes.into(),
