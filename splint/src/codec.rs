@@ -152,8 +152,8 @@ where
 {
     if terms.len() != T::LEN {
         return Err(TermCodecError::ArityMismatch {
-            expected: terms.len(),
-            actual: T::LEN,
+            expected: T::LEN,
+            actual: terms.len(),
         });
     }
     value.to_terms(ctx, terms)

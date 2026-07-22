@@ -576,9 +576,12 @@ fn term_lists_use_the_new_tuple_traits() {
         assert_eq!(from_terms::<_, (i64, i64)>(frame, &args).unwrap(), (2, 3));
 
         let short = frame.terms(1).unwrap();
-        assert!(matches!(
+        assert_eq!(
             to_terms(frame, &short, &(1_i64, 2_i64)).unwrap_err(),
-            TermCodecError::ArityMismatch { .. }
-        ));
+            TermCodecError::ArityMismatch {
+                expected: 2,
+                actual: 1,
+            }
+        );
     });
 }
