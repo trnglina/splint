@@ -15,7 +15,7 @@ serde = ["dep:serde"]
 [dependencies]
 swipl-sys = { version = "0.1.0", path = "../swipl-sys" }
 splint-derive = { version = "0.1.0", path = "../splint-derive", optional = true }
-thiserror = "2.0.18"
+thiserror = "=2.0.19"
 serde = { version = "1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
