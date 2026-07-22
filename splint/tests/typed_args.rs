@@ -1,6 +1,5 @@
 use std::sync::LazyLock;
 
-use serde::Deserialize;
 use splint::{
     input, input_as, output, ArgumentError, CallError, Engine, EngineAttributes, FliContext,
     Predicate, Query, QueryError, QueryOptions, Runtime,
@@ -80,7 +79,7 @@ fn typed_calls_report_argument_query_and_result_errors() {
         };
         assert!(matches!(
             argument_error,
-            CallError::Arguments(ArgumentError::Serde(_))
+            CallError::Arguments(ArgumentError::Codec(_))
         ));
 
         let succ = predicate(frame, "succ", 2);
@@ -102,7 +101,7 @@ fn typed_calls_report_argument_query_and_result_errors() {
             .unwrap();
         assert!(matches!(
             Query::once_with(frame, &member, args, QueryOptions::default()),
-            Err(CallError::ResultDecoding(ArgumentError::Serde(_)))
+            Err(CallError::ResultDecoding(ArgumentError::Codec(_)))
         ));
     });
 }
@@ -147,7 +146,7 @@ fn typed_solution_iterators_decode_and_can_keep_a_binding() {
     });
 }
 
-#[derive(Deserialize)]
+#[derive(splint::FromTerm)]
 struct Hello(String, i64);
 
 #[test]

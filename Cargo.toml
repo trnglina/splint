@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "swipl-sys",
     "splint",
+    "splint-derive",
 ]
 
 [workspace.package]

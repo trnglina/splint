@@ -252,8 +252,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "splint-derive",
  "swipl-sys",
  "thiserror",
+]
+
+[[package]]
+name = "splint-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

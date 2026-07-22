@@ -12,9 +12,8 @@ pub enum ArgumentError {
     #[error(transparent)]
     Term(#[from] TermError),
     /// Converting between a Rust value and a Prolog term failed.
-    #[cfg(feature = "serde")]
     #[error(transparent)]
-    Serde(#[from] crate::serde::Error),
+    Codec(#[from] crate::TermCodecError),
 }
 
 /// An error from preparing arguments or executing a prepared predicate call.

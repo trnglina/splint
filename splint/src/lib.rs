@@ -3,8 +3,9 @@
 //! This crate wraps the raw [`swipl_sys`] bindings in types whose ownership
 //! and borrowing rules encode SWI-Prolog's threading model, so that the safe
 //! surface cannot cause undefined behavior — with one explicit, accepted
-//! exception: [`ExternalRecord::from_bytes`] (and the `Deserialize` impl
-//! built on it) trusts the caller-supplied byte buffer's structure (XR2).
+//! exception: [`ExternalRecord::from_bytes`] (and its optional Serde
+//! `Deserialize` impl) trusts the caller-supplied byte buffer's structure
+//! (XR2).
 //! Currently covered: the process-global [`Runtime`], thread-movable
 //! [`Engine`]s, foreign [`Frame`]s, [`Term`] references, [`Query`] execution,
 //! dicts, and [`Record`]ed and [`ExternalRecord`]ed terms.
@@ -195,9 +196,9 @@
 //!   FFI); [`ExternalRecord::from_bytes`] does not validate structurally,
 //!   since there is no safe way to do so without a live engine (XR2 covers
 //!   the resulting trust boundary). Because it is ordinary owned data end to
-//!   end, its `Serialize`/`Deserialize` impls need no scope invariant
-//!   (contrast the removed S2): the FFI-touching step always happens outside
-//!   of serde, at construction or recall time.
+//!   end, its optional Serde `Serialize`/`Deserialize` impls need no scope
+//!   invariant. Its [`ToTerm`]/[`FromTerm`] impls deliberately do cross FFI:
+//!   they map the bytes to and from the original ordinary Prolog term.
 //! - **XR2** — `PL_recorded_external` takes no length argument and performs
 //!   no bounds checking against the buffer it's given: it trusts the
 //!   buffer's own embedded op-codes and lengths, tracking only where the data
@@ -227,15 +228,15 @@
 //!   frame during the callback; the assert proves that frame is the context
 //!   the returned [`Term`]s borrow.
 //!
-//! Serde (see `serde/`, behind the `serde` feature):
+//! Term conversion (see `codec.rs`):
 //!
-//! - **S1** — The serde serializer and deserializer allocate scratch term
+//! - **TC1** — [`ToTerm`] and [`FromTerm`] implementations allocate scratch
 //!   references only through the caller-supplied [`FliContext`] and open no
-//!   scopes of their own (dict reads go through the same public term
-//!   operations as direct use), so they add no scoping rules: the caller's
-//!   context must be the thread's innermost open scope (C2/C3), exactly as
-//!   for direct term allocation. [`Record`] has no `Serialize`/`Deserialize`
-//!   impl: its raw handle must never travel through the serde data model.
+//!   scopes of their own. Derived decoders traverse the original live
+//!   subterms directly rather than buffering through a generic value model;
+//!   this is what lets [`ExternalRecord`] capture arbitrary externally
+//!   recordable Prolog terms without losing sharing, cycles, attributed
+//!   variables, or Prolog-specific term kinds.
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
@@ -249,6 +250,8 @@
 
 mod args;
 mod call;
+pub mod codec;
+mod codec_args;
 mod engine;
 mod exception;
 mod external_record;
@@ -263,6 +266,10 @@ mod term;
 
 pub use args::{Args, ArgsSpec, ArgumentError, CallError};
 pub use call::ScopedCallError;
+pub use codec::{
+    from_term, from_terms, to_term, to_terms, FromTerm, FromTerms, TermCodecError, ToTerm, ToTerms,
+};
+pub use codec_args::{input, input_as, output, Input, InputAs, Output, TermArg};
 pub use engine::{
     AttachError, AttachedEngine, CurrentEngine, Engine, EngineAttributes, EngineCreateError,
 };
@@ -272,11 +279,8 @@ pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{CallSolutions, Query, QueryError, QueryOptions, Solutions, TrySolutions};
 pub use record::{Record, RecordError};
 pub use runtime::{InitError, Runtime};
-#[cfg(feature = "serde")]
-pub use serde::{
-    from_term, from_terms, input, input_as, output, to_term, to_terms, Error as SerdeError, Input,
-    InputAs, Output, TermArg,
-};
+#[cfg(feature = "derive")]
+pub use splint_derive::{FromTerm, ToTerm};
 pub use term::{
     DictKey, FliContext, Frame, FrameError, ListShape, Term, TermError, TermKind, TermList,
 };

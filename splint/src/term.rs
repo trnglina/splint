@@ -170,8 +170,10 @@ pub trait FliContext: Sealed {
     ///
     /// The specification is a tuple of existing [`Term`] values. Each term
     /// is passed through without decoding, and its position in a successful
-    /// result tuple is `()`. With the `serde` feature, value-converting input
-    /// and output specifications are also accepted.
+    /// result tuple is `()`. Value-converting [`input`](crate::input),
+    /// [`input_as`](crate::input_as), and [`output`](crate::output)
+    /// specifications use [`ToTerm`](crate::ToTerm) and
+    /// [`FromTerm`](crate::FromTerm).
     fn args<S>(&self, spec: S) -> Result<crate::Args<'_, S>, crate::CallError>
     where
         S: crate::ArgsSpec,
@@ -494,12 +496,11 @@ impl<'f> Term<'f> {
     /// remains directly inspectable and can be reused across argument blocks.
     /// Pass a bare `Term` to [`FliContext::args`] when no decoding is needed;
     /// that position in the result tuple will be `()`.
-    #[cfg(feature = "serde")]
     pub fn as_arg<T>(self) -> crate::TermArg<'f, T>
     where
-        T: ::serde::de::DeserializeOwned,
+        T: crate::FromTerm,
     {
-        crate::serde::args::TermArg::new(self)
+        crate::TermArg::new(self)
     }
 
     /// Resets the term to a fresh unbound variable (`PL_put_variable`).
