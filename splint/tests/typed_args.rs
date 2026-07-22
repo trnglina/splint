@@ -1,8 +1,9 @@
 use std::sync::LazyLock;
 
+use serde::Deserialize;
 use splint::{
     input, input_as, output, ArgumentError, CallError, Engine, EngineAttributes, FliContext,
-    Predicate, Query, QueryError, QueryOptions, Record, Runtime,
+    Predicate, Query, QueryError, QueryOptions, Runtime,
 };
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
@@ -42,21 +43,6 @@ fn input_as_accepts_borrowed_input_and_decodes_an_owned_value() {
         let result =
             Query::once_with(frame, &string_length, args, QueryOptions::default()).unwrap();
         assert_eq!(result, ("world".to_owned(), 5));
-    });
-}
-
-#[test]
-fn typed_outputs_can_be_records() {
-    with_frame(|frame| {
-        let member = predicate(frame, "member", 2);
-        let args = frame
-            .args((output::<Record>(), input(vec![7_i64, 8, 9])))
-            .unwrap();
-
-        let (record, values) =
-            Query::once_with(frame, &member, args, QueryOptions::default()).unwrap();
-        assert_eq!(values, [7, 8, 9]);
-        assert_eq!(record.recall(frame).unwrap().get_i64().unwrap(), 7);
     });
 }
 
@@ -161,24 +147,25 @@ fn typed_solution_iterators_decode_and_can_keep_a_binding() {
     });
 }
 
+#[derive(Deserialize)]
+struct Hello(String, i64);
+
 #[test]
 fn bare_terms_are_passed_without_decoding() {
     with_frame(|frame| {
         let nonvar = predicate(frame, "nonvar", 1);
         let value = frame.term().unwrap();
-        value.put_term_from_text("hello(world)").unwrap();
+        value.put_term_from_text("'Hello'(world, 1)").unwrap();
 
-        let recorded_args = frame.args((value.as_arg::<Record>(),)).unwrap();
-        let (record,) =
-            Query::once_with(frame, &nonvar, recorded_args, QueryOptions::default()).unwrap();
+        let decoded_args = frame.args((value.as_arg::<Hello>(),)).unwrap();
+        let (hello,) =
+            Query::once_with(frame, &nonvar, decoded_args, QueryOptions::default()).unwrap();
 
         let functor = value.get_functor().unwrap();
-        assert_eq!(functor.name().text(), "hello");
-        assert_eq!(functor.arity(), 1);
-        assert_eq!(
-            record.recall(frame).unwrap().write_to_string().unwrap(),
-            "hello(world)"
-        );
+        assert_eq!(functor.name().text(), "Hello");
+        assert_eq!(functor.arity(), 2);
+        assert_eq!(hello.0, "world");
+        assert_eq!(hello.1, 1);
 
         let pass_through_args = frame.args((value,)).unwrap();
         assert_eq!(

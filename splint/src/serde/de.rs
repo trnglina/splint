@@ -4,7 +4,7 @@ use ::serde::de::{
 };
 use ::serde::{forward_to_deserialize_any, Deserializer};
 
-use super::{record_token, Error};
+use super::Error;
 use crate::term::{DictKey, FliContext, Term, TermError, TermKind, TermList};
 
 /// Builds a string deserializer with the error type pinned to [`Error`], used
@@ -269,17 +269,12 @@ impl<'x, 'de, 'f, C: FliContext + ?Sized> Deserializer<'de> for TermDeserializer
 
     fn deserialize_newtype_struct<V>(
         self,
-        name: &'static str,
+        _name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        if name == record_token::RECORD_TOKEN {
-            let raw = crate::record::record_raw(self.term)?;
-            let _handoff = record_token::push_incoming(raw);
-            return visitor.visit_newtype_struct(record_token::unit_deserializer());
-        }
         visitor.visit_newtype_struct(TermDeserializer {
             ctx: self.ctx,
             term: self.term,

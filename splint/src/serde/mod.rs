@@ -22,24 +22,26 @@
 //! decode requested final bindings into owned tuples and can keep terms
 //! connected across sequential or nested calls.
 //!
-//! A [`Record`](crate::Record) may appear anywhere in a serialized or
-//! deserialized value: serializing recalls the recorded term into place, and
-//! deserializing records the term and yields a fresh [`Record`](crate::Record)
-//! that outlives the source term's scope. The handle itself never travels
-//! through the serde data model — it crosses only via a private same-thread,
-//! same-call handoff (S2, see `record_token.rs`) — so records cannot be
-//! serialized to or deserialized from foreign formats (e.g. JSON); those
-//! paths fail with a clean error. The same applies to positions serde routes
-//! through its internal value buffering — `#[serde(untagged)]` and
-//! internally-tagged enums, and `#[serde(flatten)]` — which never reach the
-//! handoff and so fail the same way, never silently and never unsoundly.
+//! [`Record`](crate::Record) has no `Serialize`/`Deserialize` impl: its raw
+//! handle must never travel through the serde data model, and there is no
+//! way to make that safe while also supporting positions serde routes
+//! through its internal value buffering (`#[serde(untagged)]` and
+//! internally-tagged enums, `#[serde(flatten)]`). Use
+//! [`ExternalRecord`](crate::ExternalRecord) instead when a record needs to
+//! cross serde: it serializes as plain bytes (`PL_record_external`), so it
+//! works in every position, including buffered and foreign-format ones, at
+//! the cost of not being zero-copy. Its `Deserialize` impl is safe to call
+//! but trusts the incoming bytes (see
+//! [`ExternalRecord::from_bytes`](crate::ExternalRecord::from_bytes) and
+//! invariant XR2) — decoding from an untrusted source is a deliberate,
+//! accepted trust boundary, not a validated format.
 //!
 //! References to the external `serde` crate use the absolute path `::serde`
 //! to avoid shadowing by this module (`crate::serde`).
 
 pub(crate) mod args;
 mod de;
-mod record_token;
+mod external_record;
 mod ser;
 
 pub use args::{input, input_as, output, Input, InputAs, Output, TermArg};
@@ -47,7 +49,6 @@ pub use de::{from_term, from_terms};
 pub use ser::{to_term, to_terms};
 
 use crate::handles::HandleError;
-use crate::record::RecordError;
 use crate::term::{TermError, TermKind};
 
 /// The error type for serialization to and deserialization from terms.
@@ -65,19 +66,6 @@ pub enum Error {
     /// A handle construction (e.g. a functor) failed.
     #[error(transparent)]
     Handle(#[from] HandleError),
-
-    /// Recording or recalling a [`Record`](crate::Record) failed.
-    #[error(transparent)]
-    Record(#[from] RecordError),
-
-    /// The private record token reached the serializer without a matching
-    /// handoff from [`Record`](crate::Record)'s own `Serialize` impl — a
-    /// forged `serialize_newtype_struct` call. (The deserialize-side
-    /// counterpart surfaces through the driving deserializer's own error
-    /// type instead — [`Error::Message`] when that is splint — because
-    /// `Visitor` methods are generic over it.)
-    #[error("a record can only be serialized into or deserialized from a Prolog term")]
-    ForeignRecord,
 
     /// The term does not have the shape the target type requires.
     #[error("expected a term convertible to {expected}")]
