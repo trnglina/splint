@@ -5,8 +5,8 @@ use serde::de::{DeserializeOwned, MapAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeTupleStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use splint::{
-    from_term, from_terms, to_term, to_terms, Engine, EngineAttributes, ExternalRecord,
-    FliContext, Predicate, Query, QueryOptions, Runtime, SerdeError, TermError, TermKind,
+    from_term, from_terms, to_term, to_terms, Engine, EngineAttributes, ExternalRecord, FliContext,
+    Predicate, Query, QueryOptions, Runtime, SerdeError, TermError, TermKind,
 };
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
