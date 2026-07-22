@@ -976,6 +976,13 @@ impl<'f> Term<'f> {
         Ok(Record::from_raw(raw))
     }
 
+    /// Records this term as portable bytes (`PL_record_external`), returning
+    /// an [`ExternalRecord`](crate::ExternalRecord) — a plain owned value
+    /// with no live FFI obligation, unlike [`Record`].
+    pub fn record_external(&self) -> Result<crate::ExternalRecord, RecordError> {
+        crate::ExternalRecord::from_term(*self)
+    }
+
     /// The raw term reference for crate-internal FFI calls.
     pub(crate) fn as_raw(&self) -> term_t {
         self.raw

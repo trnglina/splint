@@ -2,10 +2,12 @@
 //!
 //! This crate wraps the raw [`swipl_sys`] bindings in types whose ownership
 //! and borrowing rules encode SWI-Prolog's threading model, so that the safe
-//! surface cannot cause undefined behavior. Currently covered: the
-//! process-global [`Runtime`], thread-movable [`Engine`]s, foreign
-//! [`Frame`]s, [`Term`] references, [`Query`] execution, dicts, and
-//! [`Record`]ed terms.
+//! surface cannot cause undefined behavior — with one explicit, accepted
+//! exception: [`ExternalRecord::from_bytes`] (and the `Deserialize` impl
+//! built on it) trusts the caller-supplied byte buffer's structure (XR2).
+//! Currently covered: the process-global [`Runtime`], thread-movable
+//! [`Engine`]s, foreign [`Frame`]s, [`Term`] references, [`Query`] execution,
+//! dicts, and [`Record`]ed and [`ExternalRecord`]ed terms.
 //!
 //! # Soundness invariants
 //!
@@ -173,13 +175,46 @@
 //!   an engine generation: its store is engine-independent (like an [`Atom`],
 //!   A2) and outlives every record, because the runtime is never torn down
 //!   (R1). A record may therefore outlive every frame, query, and engine, and
-//!   be minted with no `&Runtime` in scope at all — which is what lets
-//!   deserialization (S2) produce one. It is [`Send`] + [`Sync`]: records are
-//!   portable across threads and engines, and recalls only read the immutable
-//!   recorded copy into each caller's own engine stack. Producing one
-//!   ([`Term::record`]) checks the source term's generation (C3); recalling it
-//!   ([`Record::recall`]) allocates the destination through an
-//!   [`FliContext`], which witnesses that an engine is current.
+//!   be minted with no `&Runtime` in scope at all. It is [`Send`] + [`Sync`]:
+//!   records are portable across threads and engines, and recalls only read
+//!   the immutable recorded copy into each caller's own engine stack.
+//!   Producing one ([`Term::record`]) checks the source term's generation
+//!   (C3); recalling it ([`Record::recall`]) allocates the destination
+//!   through an [`FliContext`], which witnesses that an engine is current.
+//!
+//! External records (see `external_record.rs`):
+//!
+//! - **XR1** — An [`ExternalRecord`] holds an owned copy of
+//!   `PL_record_external`'s buffer: the FFI buffer is copied into ordinary
+//!   Rust-owned memory and immediately erased (`PL_erase_external`), so the
+//!   value carries no live FFI obligation, no lifetime, and no engine
+//!   generation — it is plain data, trivially [`Send`] + [`Sync`] +
+//!   [`Clone`], and comparable by value (unlike [`Record`]'s identity-only
+//!   `ptr_eq`). Constructing one from a term, and recalling one back into a
+//!   term, both still require an [`FliContext`] (unavoidable — both cross
+//!   FFI); [`ExternalRecord::from_bytes`] does not validate structurally,
+//!   since there is no safe way to do so without a live engine (XR2 covers
+//!   the resulting trust boundary). Because it is ordinary owned data end to
+//!   end, its `Serialize`/`Deserialize` impls need no scope invariant
+//!   (contrast the removed S2): the FFI-touching step always happens outside
+//!   of serde, at construction or recall time.
+//! - **XR2** — `PL_recorded_external` takes no length argument and performs
+//!   no bounds checking against the buffer it's given: it trusts the
+//!   buffer's own embedded op-codes and lengths, tracking only where the data
+//!   starts, never where it ends. Some malformed encodings are caught early
+//!   and cleanly (e.g. an incompatible version/word-size header); others —
+//!   structurally plausible but truncated or otherwise corrupted buffers —
+//!   are not, and cause an out-of-bounds read. This is this crate's one
+//!   deliberate exception to "the safe surface cannot cause undefined
+//!   behavior": [`ExternalRecord::from_bytes`] and the `Deserialize` impl
+//!   built on it stay safe functions rather than `unsafe fn`, because
+//!   ergonomic, safe bytes-in/bytes-out is a design goal of
+//!   [`ExternalRecord`] and defending against an adversarial byte source is
+//!   out of scope for this crate. The caller's obligation: only pass bytes
+//!   that were themselves produced by [`ExternalRecord::as_bytes`]/
+//!   [`ExternalRecord::from_term`], directly or via a trusted round-trip
+//!   (e.g. writing them to and reading them back from disk) — never bytes
+//!   from an untrusted or adversarial source.
 //!
 //! Dicts (see `term.rs`):
 //!
@@ -199,16 +234,8 @@
 //!   scopes of their own (dict reads go through the same public term
 //!   operations as direct use), so they add no scoping rules: the caller's
 //!   context must be the thread's innermost open scope (C2/C3), exactly as
-//!   for direct term allocation.
-//! - **S2** — A [`Record`] handle crosses the serde boundary only through a
-//!   same-thread, same-call thread-local handoff keyed by a private newtype
-//!   token; the value placed in the serde data model is a guard that always
-//!   errors. A forged token call finds the handoff empty and fails without
-//!   reaching FFI with a fabricated handle; foreign formats and serde's
-//!   internally buffered positions (untagged/internally-tagged enums,
-//!   flatten) fail the same clean way. Scope guards remove unconsumed
-//!   handoffs on errors and panics, so a raw handle can never leak into a
-//!   later serde call.
+//!   for direct term allocation. [`Record`] has no `Serialize`/`Deserialize`
+//!   impl: its raw handle must never travel through the serde data model.
 //!
 //! Leaking values ([`std::mem::forget`]) never causes undefined behavior:
 //! a leaked guard leaves an engine attached (and eventually leaked), its
@@ -224,6 +251,7 @@ mod args;
 mod call;
 mod engine;
 mod exception;
+mod external_record;
 mod handles;
 mod query;
 mod record;
@@ -239,6 +267,7 @@ pub use engine::{
     AttachError, AttachedEngine, CurrentEngine, Engine, EngineAttributes, EngineCreateError,
 };
 pub use exception::PrologException;
+pub use external_record::ExternalRecord;
 pub use handles::{Atom, Functor, HandleError, Module, Predicate};
 pub use query::{CallSolutions, Query, QueryError, QueryOptions, Solutions, TrySolutions};
 pub use record::{Record, RecordError};

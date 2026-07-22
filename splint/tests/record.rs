@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use splint::{Engine, EngineAttributes, FliContext, Record, Runtime};
+use splint::{Engine, EngineAttributes, ExternalRecord, FliContext, Record, Runtime};
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     Runtime::initialize(["splint-test", "-q"]).expect("shared runtime initialize failed")
@@ -225,5 +225,80 @@ fn record_moves_across_threads_and_recalls() {
                 })
                 .expect("attach failed");
         });
+    });
+}
+
+#[test]
+fn external_record_round_trips_through_bytes() {
+    with_frame(|frame| {
+        let term = frame.term().unwrap();
+        term.put_term_from_text("foo(bar, 42)").unwrap();
+        let external = term.record_external().unwrap();
+
+        let recalled = external.recall(frame).unwrap();
+        assert_eq!(recalled.write_to_string().unwrap(), "foo(bar,42)");
+    });
+}
+
+#[test]
+fn external_record_survives_a_fresh_engine() {
+    let external: ExternalRecord = with_frame(|frame| {
+        let term = frame.term().unwrap();
+        term.put_i64(99).unwrap();
+        term.record_external().unwrap()
+    });
+
+    with_frame(|frame| {
+        let recalled = external.recall(frame).unwrap();
+        assert_eq!(recalled.get_i64().unwrap(), 99);
+    });
+}
+
+#[test]
+fn record_to_external_and_back_round_trips() {
+    with_frame(|frame| {
+        let term = frame.term().unwrap();
+        term.put_term_from_text("mixed(1, \"two\")").unwrap();
+        let record = term.record().unwrap();
+
+        let external = record.to_external(frame).unwrap();
+        let round_tripped = external.to_record(frame).unwrap();
+
+        let recalled = round_tripped.recall(frame).unwrap();
+        assert_eq!(recalled.write_to_string().unwrap(), "mixed(1,\"two\")");
+    });
+}
+
+#[test]
+fn external_record_bytes_round_trip_through_from_bytes() {
+    with_frame(|frame| {
+        let term = frame.term().unwrap();
+        term.put_term_from_text("via_bytes(1, 2)").unwrap();
+        let external = term.record_external().unwrap();
+
+        let reconstructed = ExternalRecord::from_bytes(external.as_bytes().to_vec());
+        let recalled = reconstructed.recall(frame).unwrap();
+        assert_eq!(recalled.write_to_string().unwrap(), "via_bytes(1,2)");
+    });
+}
+
+#[test]
+fn malformed_external_record_bytes_with_bad_header_fail_cleanly_on_recall() {
+    with_frame(|frame| {
+        // This only exercises the one class of malformed input SWI-Prolog
+        // catches early and cleanly: a leading byte that fails the
+        // version/word-size compatibility check. It is not a general
+        // guarantee — a buffer that's structurally plausible but truncated
+        // or corrupted past the header is not caught, and causes an
+        // out-of-bounds read instead (see invariant XR2 in `lib.rs`). That
+        // case can't be exercised here without deliberately triggering
+        // undefined behavior.
+        let garbage = ExternalRecord::from_bytes(vec![0xFF; 8]);
+        assert!(garbage.recall(frame).is_err());
+
+        // The frame is still usable: no crash, no corrupted engine state.
+        let other = frame.term().unwrap();
+        other.put_i64(2).unwrap();
+        assert_eq!(other.get_i64().unwrap(), 2);
     });
 }

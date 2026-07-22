@@ -65,10 +65,18 @@ struct RawRecord {
 unsafe impl Send for RawRecord {}
 unsafe impl Sync for RawRecord {}
 
+/// Maps a just-failed FFI call's pending exception (if any) to a
+/// [`RecordError`], consuming it.
+pub(crate) fn pending_record_error() -> RecordError {
+    match take_pending_exception() {
+        Some(exception) => RecordError::Exception(exception),
+        None => RecordError::Failed,
+    }
+}
+
 /// Records `term`, returning the raw handle carrying one erase obligation.
 ///
-/// Shared by [`Term::record`] and the serde record handoff, which needs the
-/// raw handle before it has committed to producing a [`Record`].
+/// Used by [`Term::record`], which wraps the raw handle into a [`Record`].
 pub(crate) fn record_raw(term: Term<'_>) -> Result<record_t, RecordError> {
     crate::scope::assert_gen(term.gen(), "term");
     // SAFETY: C3 assert above; `PL_record` copies the term into the global
@@ -76,19 +84,15 @@ pub(crate) fn record_raw(term: Term<'_>) -> Result<record_t, RecordError> {
     // obligation, which the caller takes on.
     let raw = unsafe { swipl_sys::PL_record(term.as_raw()) };
     if raw.is_null() {
-        return Err(match take_pending_exception() {
-            Some(exception) => RecordError::Exception(exception),
-            None => RecordError::Failed,
-        });
+        return Err(pending_record_error());
     }
     Ok(raw)
 }
 
 /// Recalls the raw record `raw` into `term` (`PL_recorded`).
 ///
-/// Shared by [`Record::recall_into`] and the serde record handoff, which
-/// recalls from a raw handle rather than a `&Record`. The caller must ensure
-/// `raw` is a live handle.
+/// Used by [`Record::recall_into`]. The caller must ensure `raw` is a live
+/// handle.
 pub(crate) fn recall_raw_into(raw: record_t, term: Term<'_>) -> Result<(), RecordError> {
     crate::scope::assert_gen(term.gen(), "term");
     // SAFETY: `raw` is a live record handle (caller's contract); `term` is a
@@ -98,10 +102,24 @@ pub(crate) fn recall_raw_into(raw: record_t, term: Term<'_>) -> Result<(), Recor
     if ok {
         return Ok(());
     }
-    match take_pending_exception() {
-        Some(exception) => Err(RecordError::Exception(exception)),
-        None => Err(RecordError::Failed),
-    }
+    Err(pending_record_error())
+}
+
+/// Allocates a fresh term from `ctx` and recalls into it via `recall_into`.
+/// Shared by [`Record::recall`] and
+/// [`ExternalRecord::recall`](crate::ExternalRecord::recall).
+pub(crate) fn recall_via<'a, C: FliContext + ?Sized>(
+    ctx: &'a C,
+    recall_into: impl FnOnce(Term<'a>) -> Result<(), RecordError>,
+) -> Result<Term<'a>, RecordError> {
+    // `ctx.term()` already captured and cleared any resource exception;
+    // preserve it rather than flattening it to the generic `Failed`.
+    let dest = ctx.term().map_err(|error| match error {
+        TermError::Exception(exception) => RecordError::Exception(exception),
+        _ => RecordError::Failed,
+    })?;
+    recall_into(dest)?;
+    Ok(dest)
 }
 
 impl Record {
@@ -121,14 +139,7 @@ impl Record {
     /// Panics if `ctx` is not the innermost open scope of the thread's current
     /// engine (C2/C3), as for [`FliContext::term`].
     pub fn recall<'a, C: FliContext + ?Sized>(&self, ctx: &'a C) -> Result<Term<'a>, RecordError> {
-        // `ctx.term()` already captured and cleared any resource exception;
-        // preserve it rather than flattening it to the generic `Failed`.
-        let dest = ctx.term().map_err(|error| match error {
-            TermError::Exception(exception) => RecordError::Exception(exception),
-            _ => RecordError::Failed,
-        })?;
-        self.recall_into(dest)?;
-        Ok(dest)
+        recall_via(ctx, |dest| self.recall_into(dest))
     }
 
     /// Recalls the recorded term into the existing reference `term`
@@ -186,9 +197,15 @@ impl Record {
         Arc::as_ptr(&self.inner).hash(state);
     }
 
-    #[cfg(feature = "serde")]
-    pub(crate) fn as_raw(&self) -> record_t {
-        self.inner.raw
+    /// Recalls this record and re-records it as portable bytes
+    /// (`PL_record_external`), producing an [`ExternalRecord`](crate::ExternalRecord) —
+    /// a plain owned value with no live FFI obligation, unlike this handle.
+    pub fn to_external<C: FliContext + ?Sized>(
+        &self,
+        ctx: &C,
+    ) -> Result<crate::ExternalRecord, RecordError> {
+        let term = self.recall(ctx)?;
+        crate::ExternalRecord::from_term(term)
     }
 }
 
